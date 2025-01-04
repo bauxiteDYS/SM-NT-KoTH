@@ -4,13 +4,14 @@
 #include <dhooks>
 #include <neotokyo>
 
-#define DEBUG false
+#define DEBUG true
 #define PRNT_SRVR (1<<0)
 #define PRNT_CNSL (1<<1)
 #define PRNT_CHT (1<<2)
 #define PRNT_CNT (1<<3)
 #define PRNT_THREE 7
 #define PRNT_ALL 15
+
 
 #define GAMEHUD_TIE 3
 #define GAMEHUD_JINRAI 4
@@ -21,16 +22,25 @@ public Plugin myinfo = {
 	name = "NT King of the hill mode",
 	description = "Enables KoTH mode",
 	author = "bauxite",
-	version = "0.1.0",
+	version = "0.1.3",
 	url = "",
 };
 
 DynamicDetour ddWin;
 
+Handle g_hillTimer = null;
+Handle g_winTimer = null;
+Handle g_hudTimer = null;
+
 bool g_lateLoad;
 bool g_kothMap;
 
-bool g_hillActive = true;
+bool g_hillActive;
+
+int red;
+int green;
+int blue;
+int alpha;
 
 int g_nsfOnHill;
 int g_jinOnHill;
@@ -46,6 +56,8 @@ float g_startTime;
 
 float g_jinTime;
 float g_nsfTime;
+
+float roundTimeLeft;
 
 int GetOpposingTeam(int team)
 {
@@ -143,9 +155,6 @@ public void OnMapStart()
 	StoreToAddress(view_as<Address>(0x2245556E), 'K', NumberType_Int8);
 	StoreToAddress(view_as<Address>(0x2245556F), 'T', NumberType_Int8);
 	StoreToAddress(view_as<Address>(0x22455570), 'H', NumberType_Int8);
-	
-	CreateTimer(0.5, HudTimer, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
-	CreateTimer(0.1, WinTimer, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
 }
 
 public void OnMapEnd()
@@ -158,6 +167,17 @@ public void OnMapEnd()
 	StoreToAddress(view_as<Address>(0x2245556E), 'C', NumberType_Int8);
 	StoreToAddress(view_as<Address>(0x2245556F), 'T', NumberType_Int8);
 	StoreToAddress(view_as<Address>(0x22455570), 'G', NumberType_Int8);
+}
+
+public void OnConfigsExecuted()
+{
+	if(!g_kothMap)
+	{
+		return;
+	}
+	
+	FindConVar("neo_score_limit").IntValue = 5;
+	FindConVar("neo_round_timelimit").FloatValue = 6.26;
 }
 
 void DisableDetour() 
@@ -206,8 +226,63 @@ MRESReturn CheckWinCondition(Address pThis, DHookReturn hReturn)
 		return MRES_Supercede;
 	}
 	
-	return MRES_Supercede;
+	//return MRES_Supercede;
+	return MRES_Ignored;
 }
+
+bool CheckingForWin() 
+{
+	roundTimeLeft = GameRules_GetPropFloat("m_fRoundTimeLeft");
+	
+	if (roundTimeLeft == 0.0)
+	{
+		PrintMsg("[KoTH] Tie", PRNT_CHT | PRNT_CNSL);
+		EndRoundAndShowWinner(BOTH_TEAMS);
+		return true;
+	}
+	
+	return false;
+}
+
+void ResetWin()
+{
+	if(IsValidHandle(g_winTimer))
+	{
+		CloseHandle(g_winTimer);
+		g_winTimer = null;
+		PrintToServer("deleting win timer");
+	}
+	
+	if(IsValidHandle(g_hudTimer))
+	{
+		CloseHandle(g_hudTimer);
+		g_hudTimer = null;
+		PrintToServer("deleting hud timer");
+	}
+	
+	if(IsValidHandle(g_hillTimer))
+	{
+		CloseHandle(g_hillTimer);
+		g_hillTimer = null;
+		PrintToServer("deleting hill timer");
+	}
+	
+	g_hillActive = false;
+	
+	g_jinOnHill = 0;
+	g_nsfOnHill = 0;
+	g_hillHasJin = false;
+	g_hillHasNSF = false;
+	
+	g_startTime = 0.0;
+	g_jinTime = 0.0;
+	g_nsfTime = 0.0;
+	
+	g_jinStart = false;
+	g_nsfStart = false;
+}
+
+// if standing on trigger before hill activates nothing happens
 
 void Trigger_OnStartTouch(const char[] output, int caller, int activator, float delay)
 {
@@ -226,6 +301,11 @@ void Trigger_OnStartTouch(const char[] output, int caller, int activator, float 
 	else
 	{
 		PrintToChatAll("[KoTH] Error: Uknown/Invalid team on hill");
+	}
+	
+	if(!g_hillActive)
+	{
+		return;
 	}
 	
 	if(g_hillHasJin && !g_hillHasNSF && !g_jinStart)
@@ -279,6 +359,11 @@ void Trigger_OnEndTouch(const char[] output, int caller, int activator, float de
 		PrintToChatAll("[KoTH] Error: Uknown/Invalid team left hill");
 	}
 	
+	if(!g_hillActive)
+	{
+		return;
+	}
+	
 	if(g_hillHasJin && !g_hillHasNSF && !g_jinStart)
 	{
 		g_startTime = GetGameTime();
@@ -310,6 +395,14 @@ void Trigger_OnEndTouch(const char[] output, int caller, int activator, float de
 
 public Action WinTimer(Handle timer)
 {
+	if(!g_hillActive)
+	{
+		#if DEBUG
+		PrintMsg("[KoTH Debug] Error: Trying to do win timer when not live round or active hill", PRNT_CNT);
+		#endif
+		return Plugin_Continue;
+	}
+
 	curTime = GetGameTime();
 	
 	if(g_jinStart)
@@ -321,6 +414,27 @@ public Action WinTimer(Handle timer)
 	{
 		g_nsfTime += curTime - g_startTime;
 		g_startTime = curTime;
+	}
+	
+	if(g_jinTime >= 15.0)
+	{
+		g_winTimer = null;
+		
+		ResetWin();
+		EndRoundAndShowWinner(TEAM_JINRAI);
+		PrintMsg("[KoTH] Jinrai claims the hill!", PRNT_ALL);
+		
+		return Plugin_Stop;
+	}
+	else if(g_nsfTime >= 15.0)
+	{
+		g_winTimer = null;
+
+		ResetWin();
+		EndRoundAndShowWinner(TEAM_NSF)
+		PrintMsg("[KoTH] NSF claims the hill!", PRNT_ALL);
+		
+		return Plugin_Stop;
 	}
 	
 	return Plugin_Continue;
@@ -337,39 +451,47 @@ public Action HudTimer(Handle timer)
 			continue;
 		}
 		
-		if(g_jinStart || g_nsfStart)
+		if(g_jinStart)
 		{
-			SetHudTextParams(1.0, 0.79, 1.0, 255, 255, 255, 0, 1, 0.0, 0.0, 0.0); 
-			ShowHudText(i, 1, "%s on Hill", g_jinStart ? "JIN" : "NSF");
+			red = 25;
+			green = 255;
+			blue = 0;
+			alpha = 0;
+		}
+		else if(g_nsfStart)
+		{
+			red = 0;
+			green = 100;
+			blue = 255;
+			alpha = 0;
+		}
+		else if(g_hillActive)
+		{
+			red = 250;
+			green = 250;
+			blue = 250;
+			alpha = 0;
 		}
 		else
 		{
-			SetHudTextParams(1.0, 0.79, 1.0, 255, 255, 255, 0, 1, 0.0, 0.0, 0.0); 
-			ShowHudText(i, 1, "Hill %s", g_hillActive ? "active" : "disabled");
+			red = 250;
+			green = 0;
+			blue = 0;
+			alpha = 0;
 		}
 		
-		SetHudTextParams(1.0, 0.83, 1.0, 25, 235, 0, 0, 1, 0.0, 0.0, 0.0); 
-		ShowHudText(i, 2, "JIN: %.0f", g_jinTime);
+		SetHudTextParams(1.0, 0.79, 1.0, red, green, blue, alpha, 1, 0.0, 0.0, 0.0); 
+		ShowHudText(i, 4, "KoTH");
+		
+		
+		SetHudTextParams(1.0, 0.83, 1.0, 25, 225, 0, 0, 1, 0.0, 0.0, 0.0); 
+		ShowHudText(i, 5, "%.2f: JIN", g_jinTime);
 	
-		SetHudTextParams(1.0, 0.87, 1.0, 0, 25, 250, 0, 1, 0.0, 0.0, 0.0);
-		ShowHudText(i, 3, "NSF: %.0f", g_nsfTime);
+		SetHudTextParams(1.0, 0.87, 1.0, 0, 100, 255, 0, 1, 0.0, 0.0, 0.0);
+		ShowHudText(i, 6, "%.2f: NSF", g_nsfTime);
 	}
 	
 	return Plugin_Continue;
-}
-
-bool CheckingForWin() 
-{
-	float roundTimeLeft = GameRules_GetPropFloat("m_fRoundTimeLeft");
-	
-	if (roundTimeLeft == 0.0)
-	{
-		PrintMsg("[KoTH] Tie", PRNT_CHT | PRNT_CNSL);
-		EndRoundAndShowWinner(BOTH_TEAMS);
-		return true;
-	}
-	
-	return false;
 }
 
 void EndRoundAndShowWinner(int team) //what about during comp pause
@@ -415,9 +537,59 @@ public void OnRoundStartPost(Event event, const char[] name, bool dontBroadcast)
 		return;
 	}
 	
+	ResetWin();
+	
 	int trigger = FindEntityByTargetname("trigger_multiple", "koth_point");
 	HookSingleEntityOutput(trigger, "OnStartTouch", Trigger_OnStartTouch);
 	HookSingleEntityOutput(trigger, "OnEndTouch", Trigger_OnEndTouch);
+	
+	if(!IsValidHandle(g_hudTimer))
+	{
+		g_hudTimer = CreateTimer(0.3, HudTimer, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+		PrintToServer("creating hud timer");
+	}
+	
+	if(!IsValidHandle(g_hillTimer))
+	{
+		g_hillTimer = CreateTimer(30.0, HillTimer, _, TIMER_FLAG_NO_MAPCHANGE);
+		PrintToServer("creating hill timer");
+	}
+}
+
+public Action HillTimer(Handle timer)
+{
+	g_hillActive = true;
+	
+	if(g_hillHasJin && !g_hillHasNSF && !g_jinStart)
+	{
+		g_startTime = GetGameTime();
+		g_jinStart = true;
+		g_nsfStart = false;
+	}
+	else if(g_hillHasNSF && !g_hillHasJin && !g_nsfStart)
+	{
+		g_startTime = GetGameTime();
+		g_nsfStart = true;
+		g_jinStart = false;
+	}
+	else if(g_hillHasJin && g_hillHasNSF)
+	{
+		g_nsfStart = false;
+		g_jinStart = false;
+	}
+	else
+	{
+		g_nsfStart = false;
+		g_jinStart = false;
+	}
+	
+	if(!IsValidHandle(g_winTimer))
+	{
+		g_winTimer = CreateTimer(0.1, WinTimer, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+		PrintToServer("creating win timer");
+	}
+	
+	return Plugin_Stop;
 }
 
 void RespawnNewClass(int client)
