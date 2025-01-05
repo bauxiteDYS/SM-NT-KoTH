@@ -12,6 +12,14 @@
 #define PRNT_THREE 7
 #define PRNT_ALL 15
 
+#define LIFE_ALIVE 0
+#define OBS_MODE_NONE 0
+#define DAMAGE_YES 2
+#define TRAIN_NEW 0xc0
+#define SOLID_BBOX 2
+#define EF_NODRAW 0x020
+#define SF_NORESPAWN (1 << 30)
+#define DEATH_COMPLETE_SEC 10.0
 
 #define GAMEHUD_TIE 3
 #define GAMEHUD_JINRAI 4
@@ -22,7 +30,7 @@ public Plugin myinfo = {
 	name = "NT King of the hill mode",
 	description = "Enables KoTH mode",
 	author = "bauxite",
-	version = "0.1.3",
+	version = "0.1.5",
 	url = "",
 };
 
@@ -51,6 +59,8 @@ bool g_hillHasJin;
 bool g_jinStart;
 bool g_nsfStart;
 
+bool g_clientFirstJoin[NEO_MAXPLAYERS+1];
+
 float curTime;
 float g_startTime;
 
@@ -58,6 +68,8 @@ float g_jinTime;
 float g_nsfTime;
 
 float roundTimeLeft;
+
+float g_deathTime[NEO_MAXPLAYERS+1];
 
 int GetOpposingTeam(int team)
 {
@@ -109,6 +121,10 @@ public void OnMapInit()
 {	
 	static bool deathHook;
 	static bool roundHook;
+	static bool spawnHook;
+	static bool teamHook;
+	static bool commandHooks;
+	
 	char mapName[32];
 	GetCurrentMap(mapName, sizeof(mapName));
 	
@@ -117,7 +133,7 @@ public void OnMapInit()
 		g_kothMap = true;
 		ServerCommand("sm plugins unload nt_wincond"); 
 		
-		if(HookEventEx("player_death", Event_PlayerDeathPre, EventHookMode_Pre))
+		if(HookEventEx("player_death", OnPlayerDeathPre, EventHookMode_Pre))
 		{
 			deathHook = true;
 		}
@@ -127,6 +143,24 @@ public void OnMapInit()
 			roundHook = true;
 		}
 		
+		if(HookEvent("player_spawn", OnPlayerSpawnPost, EventHookMode_Post))
+		{
+			spawnHook = true;
+		}
+		
+		/*
+		if (HookEventEx("player_team", OnPlayerTeam, EventHookMode_Post))
+		{
+			teamHook = true;
+		}
+		
+		AddCommandListener(OnClass, "setclass");
+		*/
+		AddCommandListener(OnVariant, "setvariant");
+		AddCommandListener(OnLoadout, "loadout");
+		
+		commandHooks = true;
+		
 		CreateDetour();
 	}
 	else
@@ -135,14 +169,212 @@ public void OnMapInit()
 		
 		if(deathHook && roundHook)
 		{
-			UnhookEvent("player_death", Event_PlayerDeathPre, EventHookMode_Pre);
+			UnhookEvent("player_death", OnPlayerDeathPre, EventHookMode_Pre);
 			UnhookEvent("game_round_start", OnRoundStartPost, EventHookMode_Post);
+			UnhookEvent("player_spawn", OnPlayerSpawnPost, EventHookMode_Post);
+			//UnhookEvent("player_team", OnPlayerTeam, EventHookMode_Post);
+			
+			//RemoveCommandListener(OnClass, "setclass");
+			RemoveCommandListener(OnVariant, "setvariant");
+			RemoveCommandListener(OnLoadout, "loadout");
+			
 			deathHook = false;
 			roundHook = false;
+			spawnHook = false;
+			teamHook = false;
+			commandHooks = false;
 		}
 
 		DisableDetour();		
 	}
+}
+
+//when players join use fakecommand setclass and loadout to spawn them
+
+/*
+public void OnClientPutInServer(int client)
+{
+	g_clientFirstJoin[client] = true;
+}
+
+public void OnPlayerTeam(Event event, const char[] name, bool dontBroadcast)
+{
+	int userid = event.GetInt("userid");
+	int client = GetClientOfUserId(userid);
+	
+	if (client == 0 || !IsClientInGame(client) || IsFakeClient(client))
+	{
+		return;
+	}
+	
+	int GameState = GameRules_GetProp("m_iGameState");
+	
+	if(GameState != GAMESTATE_ROUND_ACTIVE)
+	{
+		return;
+	}
+	
+	RespawnNewClass(client);
+	if(g_clientFirstJoin[client])
+	{
+		SetPlayerClass(client, CLASS_RECON);
+		SetPlayerProps(client);
+		RequestFrame(ShowClassMenu, client);
+	}
+}
+
+public Action OnClass(int client, const char[] command, int argc)
+{
+	if(!g_kothMap)
+	{
+		return Plugin_Continue;
+	}
+	int GameState = GameRules_GetProp("m_iGameState");
+	
+	if(GameState == GAMESTATE_ROUND_OVER 
+	|| GameState == GAMESTATE_WAITING_FOR_PLAYERS
+	|| GameRules_GetProp("m_bFreezePeriod"))
+	{
+		return Plugin_Continue;
+	}
+	
+	if(argc != 1 || !IsClientInGame(client))
+	{
+		return Plugin_Continue;
+	}
+
+	int iClass = GetCmdArgInt(1);
+	if(iClass <= CLASS_NONE || iClass > CLASS_SUPPORT)
+	{
+		PrintToChat(client, "[KoTH] Error: Somehow tried to pick invalid class");
+		return Plugin_Continue;
+	}
+	
+	if(g_clientFirstJoin[client])
+	{
+		SetPlayerClass(client, iClass);
+	}
+	
+	return Plugin_Continue;
+}
+*/
+
+void ShowClassMenu(int client)
+{
+	if (IsClientInGame(client))
+	{
+		ClientCommand(client, "classmenu");
+	}
+}
+
+public Action OnVariant(int client, const char[] command, int argc)
+{
+	if(!g_kothMap)
+	{
+		return Plugin_Continue;
+	}
+	
+	int GameState = GameRules_GetProp("m_iGameState");
+	
+	if(GameState == GAMESTATE_ROUND_OVER 
+	|| GameState == GAMESTATE_WAITING_FOR_PLAYERS
+	|| GameRules_GetProp("m_bFreezePeriod"))
+	{
+		return Plugin_Continue;
+	}
+	
+	if(!IsClientInGame(client) || IsPlayerAlive(client))
+	{
+		return Plugin_Continue;
+	}
+	
+	RequestFrame(ShowLoadoutMenu, client);
+	return Plugin_Continue;
+}
+
+void ShowLoadoutMenu(int client)
+{
+	if (IsClientInGame(client))
+	{
+		ClientCommand(client, "loadoutmenu");
+	}
+}
+
+public Action OnLoadout(int client, const char[] command, int argc)
+{
+	if(!g_kothMap)
+	{
+		return Plugin_Continue;
+	}
+	
+	roundTimeLeft = GameRules_GetPropFloat("m_fRoundTimeLeft");
+	
+	int GameState = GameRules_GetProp("m_iGameState");
+	
+	if(GameState == GAMESTATE_ROUND_OVER 
+	|| GameState == GAMESTATE_WAITING_FOR_PLAYERS
+	|| GameRules_GetProp("m_bFreezePeriod")
+	|| roundTimeLeft < 10.0)
+	{
+		return Plugin_Continue;
+	}
+	
+	if(argc != 1 || !IsClientInGame(client) || IsPlayerAlive(client))
+	{
+		return Plugin_Continue;
+	}
+	
+	int iLoadout = GetCmdArgInt(1);
+	
+	if(iLoadout < 0 || iLoadout > 11)
+	{
+		PrintToChat(client, "[KoTH] Error: Somehow tried to pick invalid loadout");
+		return Plugin_Continue;
+	}
+	
+	RequestFrame(RespawnNewClass, client);
+	return Plugin_Continue;
+}
+
+public Action OnPlayerDeathPre(Event event, const char[] name, bool dontBroadcast)
+{
+	if(!g_kothMap)
+	{
+		return Plugin_Continue;
+	}
+	
+	roundTimeLeft = GameRules_GetPropFloat("m_fRoundTimeLeft");
+	
+	//int victim = GetClientOfUserId(GetEventInt(event, "userid"));
+	//int attacker = GetClientOfUserId(GetEventInt(event, "attacker"));
+	
+	int userid = GetEventInt(event, "userid");
+	
+	int GameState = GameRules_GetProp("m_iGameState");
+	
+	if(GameState == GAMESTATE_ROUND_OVER 
+	|| GameState == GAMESTATE_WAITING_FOR_PLAYERS 
+	|| roundTimeLeft < 22.0)
+	{
+		return Plugin_Continue;
+	}
+	
+	CreateTimer(11.0, RespawnTimer, userid, TIMER_FLAG_NO_MAPCHANGE);
+	return Plugin_Continue;
+}
+
+public Action RespawnTimer(Handle timer, int userid)
+{
+	int client = GetClientOfUserId(userid);
+	
+	if(client == 0 || !IsClientInGame(client))
+	{
+		return Plugin_Stop;
+	}
+	
+	ShowClassMenu(client);
+	 
+	return Plugin_Stop;
 }
 
 public void OnMapStart()
@@ -226,8 +458,8 @@ MRESReturn CheckWinCondition(Address pThis, DHookReturn hReturn)
 		return MRES_Supercede;
 	}
 	
-	//return MRES_Supercede;
-	return MRES_Ignored;
+	return MRES_Supercede;
+	//return MRES_Ignored;
 }
 
 bool CheckingForWin() 
@@ -280,6 +512,19 @@ void ResetWin()
 	
 	g_jinStart = false;
 	g_nsfStart = false;
+}
+
+public void OnPlayerSpawnPost(Event event, const char[] name, bool dontBroadcast)
+{
+	int useridClient = GetEventInt(event, "userid");
+	int client = GetClientOfUserId(useridClient);
+	
+	if(client <= 0 || client > MaxClients)
+	{
+		return;
+	}
+	
+	g_clientFirstJoin[client] = false;
 }
 
 // if standing on trigger before hill activates nothing happens
@@ -545,7 +790,7 @@ public void OnRoundStartPost(Event event, const char[] name, bool dontBroadcast)
 	
 	if(!IsValidHandle(g_hudTimer))
 	{
-		g_hudTimer = CreateTimer(0.3, HudTimer, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+		g_hudTimer = CreateTimer(0.31, HudTimer, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
 		PrintToServer("creating hud timer");
 	}
 	
@@ -599,7 +844,7 @@ void RespawnNewClass(int client)
 		return;
 	}
 
-	SetNewClassProps(client);
+	SetPlayerProps(client);
 	static Handle call = INVALID_HANDLE;
 	
 	if (call == INVALID_HANDLE)
@@ -616,20 +861,92 @@ void RespawnNewClass(int client)
 	SDKCall(call, client);
 }
 
-void SetNewClassProps(int client)
+void SetJoinProps(int client) //class aux etc?
 {
-	FakeClientCommand(client, "setclass 2");
-	FakeClientCommand(client, "setvariant 2");
-	FakeClientCommand(client, "loadout 0");
+	SetEntProp(client, Prop_Data, "m_fFlags", 65664);
+	SetEntProp(client, Prop_Send, "m_iClassType", 1);
 	SetEntProp(client, Prop_Send, "m_iLives", 1);
-	SetEntProp(client, Prop_Data, "m_iObserverMode", 0);
-	SetEntProp(client, Prop_Data, "m_iHealth", 100);
-	SetEntProp(client, Prop_Data, "m_lifeState", 0);
-	SetEntProp(client, Prop_Data, "m_fInitHUD", 1);
-	SetEntProp(client, Prop_Data, "m_takedamage", 2);
+	SetEntProp(client, Prop_Send, "m_iObserverMode", OBS_MODE_NONE);
+	SetEntProp(client, Prop_Send, "m_iHealth", 100);
+	SetEntProp(client, Prop_Send, "m_lifeState", 3);
 	SetEntProp(client, Prop_Send, "deadflag", 0);
 	SetEntPropFloat(client, Prop_Send, "m_flDeathTime", 0.0);
-	SetEntPropEnt(client, Prop_Data, "m_hObserverTarget", -1, 0);
+	SetEntProp(client, Prop_Send, "m_bDucked", false);
+	SetEntProp(client, Prop_Send, "m_bDucking", false);
+	SetEntProp(client, Prop_Send, "m_bDrawViewmodel", true);
+	SetEntProp(client, Prop_Send, "m_nRenderFX", 0);
+	SetEntPropFloat(client, Prop_Send, "m_flNextAttack", GetGameTime());
+	SetEntPropFloat(client, Prop_Send, "m_flMaxspeed", 0.0);
+	SetEntPropFloat(client, Prop_Send, "m_flFallVelocity", 0.0);
+	SetEntProp(client, Prop_Send, "m_nSolidType", SOLID_BBOX);
+	SetEntProp(client, Prop_Data, "m_fInitHUD", 1);
+	SetEntPropFloat(client, Prop_Data, "m_DmgTake", 0.0);
+	SetEntPropFloat(client, Prop_Data, "m_DmgSave", 0.0);
+	SetEntProp(client, Prop_Data, "m_afPhysicsFlags", 0);
+	SetEntProp(client, Prop_Data, "m_bitsDamageType", 0);
+	SetEntProp(client, Prop_Data, "m_bitsHUDDamage", -1);
+	SetEntProp(client, Prop_Data, "m_takedamage", DAMAGE_YES);
+	SetEntityMoveType(client, MOVETYPE_WALK);
+	// declaring as variables for older sm compat
+	float campvsorigin[3];
+	float hackedgunpos[3] = { 0.0, 32.0, 0.0 };
+	SetEntPropVector(client, Prop_Data, "m_vecCameraPVSOrigin", campvsorigin);
+	SetEntPropVector(client, Prop_Data, "m_HackedGunPos", hackedgunpos);
+	SetEntProp(client, Prop_Data, "m_bPlayerUnderwater", false);
+	SetEntProp(client, Prop_Data, "m_iTrain", TRAIN_NEW);
+	SetInvisible(client, false);
+	SetEntityFlags(client, GetEntityFlags(client) & ~FL_GODMODE);
+	ChangeEdictState(client, 0);
+}
+
+void SetPlayerProps(int client)
+{
+	SetEntProp(client, Prop_Send, "m_iLives", 1);
+	SetEntProp(client, Prop_Send, "m_iObserverMode", OBS_MODE_NONE);
+	SetEntProp(client, Prop_Send, "m_iHealth", 100);
+	SetEntProp(client, Prop_Send, "m_lifeState", LIFE_ALIVE);
+	SetEntProp(client, Prop_Send, "deadflag", 0);
+	SetEntPropFloat(client, Prop_Send, "m_flDeathTime", 0.0);
+	SetEntProp(client, Prop_Send, "m_bDucked", false);
+	SetEntProp(client, Prop_Send, "m_bDucking", false);
+	SetEntProp(client, Prop_Send, "m_bDrawViewmodel", true);
+	SetEntProp(client, Prop_Send, "m_nRenderFX", 0);
+	SetEntPropFloat(client, Prop_Send, "m_flNextAttack", GetGameTime());
+	SetEntPropFloat(client, Prop_Send, "m_flMaxspeed", 0.0);
+	SetEntPropFloat(client, Prop_Send, "m_flFallVelocity", 0.0);
+	SetEntProp(client, Prop_Send, "m_nSolidType", SOLID_BBOX);
+	SetEntProp(client, Prop_Data, "m_fInitHUD", 1);
+	SetEntPropFloat(client, Prop_Data, "m_DmgTake", 0.0);
+	SetEntPropFloat(client, Prop_Data, "m_DmgSave", 0.0);
+	SetEntProp(client, Prop_Data, "m_afPhysicsFlags", 0);
+	SetEntProp(client, Prop_Data, "m_bitsDamageType", 0);
+	SetEntProp(client, Prop_Data, "m_bitsHUDDamage", -1);
+	SetEntProp(client, Prop_Data, "m_takedamage", DAMAGE_YES);
+	SetEntityMoveType(client, MOVETYPE_WALK);
+	// declaring as variables for older sm compat
+	float campvsorigin[3];
+	float hackedgunpos[3] = { 0.0, 32.0, 0.0 };
+	SetEntPropVector(client, Prop_Data, "m_vecCameraPVSOrigin", campvsorigin);
+	SetEntPropVector(client, Prop_Data, "m_HackedGunPos", hackedgunpos);
+	SetEntProp(client, Prop_Data, "m_bPlayerUnderwater", false);
+	SetEntProp(client, Prop_Data, "m_iTrain", TRAIN_NEW);
+	SetInvisible(client, false);
+	SetEntityFlags(client, GetEntityFlags(client) & ~FL_GODMODE);
+	ChangeEdictState(client, 0);
+}
+
+void SetInvisible(int client, bool is_invisible)
+{
+	if (is_invisible)
+	{
+		SetEntProp(client, Prop_Send, "m_fEffects",
+		GetEntProp(client, Prop_Send, "m_fEffects") | EF_NODRAW);
+	}
+	else
+	{
+		SetEntProp(client, Prop_Send, "m_fEffects",
+		GetEntProp(client, Prop_Send, "m_fEffects") & ~EF_NODRAW);
+	}
 }
 
 public void OnClientDisconnect_Post(int client)
@@ -638,25 +955,6 @@ public void OnClientDisconnect_Post(int client)
 	{
 		return;
 	}
-}
-
-public Action Event_PlayerDeathPre(Event event, const char[] name, bool dontBroadcast)
-{
-	if(!g_kothMap)
-	{
-		return Plugin_Continue;
-	}
-	
-	int victim = GetClientOfUserId(GetEventInt(event, "userid"));
-	int attacker = GetClientOfUserId(GetEventInt(event, "attacker"));
-	int GameState = GameRules_GetProp("m_iGameState");
-	
-	if(GameState == GAMESTATE_WAITING_FOR_PLAYERS)
-	{
-		return Plugin_Continue;
-	}
-	
-	return Plugin_Continue;
 }
 
 void PrintMsg(const char[] msg, int flags, any ...)
