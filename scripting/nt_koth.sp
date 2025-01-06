@@ -30,7 +30,7 @@ public Plugin myinfo = {
 	name = "NT King of the hill mode",
 	description = "Enables KoTH mode",
 	author = "bauxite",
-	version = "0.1.5",
+	version = "0.1.6",
 	url = "",
 };
 
@@ -68,10 +68,15 @@ float g_jinTime;
 float g_nsfTime;
 
 float roundTimeLeft;
+//float g_deathTime[NEO_MAXPLAYERS+1];
 
-float g_deathTime[NEO_MAXPLAYERS+1];
+bool g_needSpawnAssist;
+bool g_canRespawn[NEO_MAXPLAYERS+1];
 
-int GetOpposingTeam(int team)
+int g_oldPlayerClass[NEO_MAXPLAYERS+1];
+int g_playerClass[NEO_MAXPLAYERS+1];
+
+stock int GetOpposingTeam(int team)
 {
     return team == TEAM_JINRAI ? TEAM_NSF : TEAM_JINRAI;
 }
@@ -94,7 +99,7 @@ int FindEntityByTargetname(const char[] classname, const char[] targetname)
 	return -1;
 }
 
-bool IsPlayerDead(int client) // Agiel: None of the normal ways seemed to handle the case when players are still selecting weapon.
+stock bool IsPlayerDead(int client) // Agiel: None of the normal ways seemed to handle the case when players are still selecting weapon.
 {
     Address player = GetEntityAddress(client);
     int isAlive = LoadFromAddress(player + view_as<Address>(0xDC4), NumberType_Int32);
@@ -121,9 +126,9 @@ public void OnMapInit()
 {	
 	static bool deathHook;
 	static bool roundHook;
-	static bool spawnHook;
-	static bool teamHook;
-	static bool commandHooks;
+	//static bool spawnHook;
+	//static bool teamHook;
+	//static bool commandHooks;
 	
 	char mapName[32];
 	GetCurrentMap(mapName, sizeof(mapName));
@@ -145,21 +150,20 @@ public void OnMapInit()
 		
 		if(HookEvent("player_spawn", OnPlayerSpawnPost, EventHookMode_Post))
 		{
-			spawnHook = true;
+			//spawnHook = true;
 		}
 		
-		/*
+		
 		if (HookEventEx("player_team", OnPlayerTeam, EventHookMode_Post))
 		{
-			teamHook = true;
+			//teamHook = true;
 		}
 		
 		AddCommandListener(OnClass, "setclass");
-		*/
 		AddCommandListener(OnVariant, "setvariant");
 		AddCommandListener(OnLoadout, "loadout");
 		
-		commandHooks = true;
+		//commandHooks = true;
 		
 		CreateDetour();
 	}
@@ -172,17 +176,17 @@ public void OnMapInit()
 			UnhookEvent("player_death", OnPlayerDeathPre, EventHookMode_Pre);
 			UnhookEvent("game_round_start", OnRoundStartPost, EventHookMode_Post);
 			UnhookEvent("player_spawn", OnPlayerSpawnPost, EventHookMode_Post);
-			//UnhookEvent("player_team", OnPlayerTeam, EventHookMode_Post);
+			UnhookEvent("player_team", OnPlayerTeam, EventHookMode_Post);
 			
-			//RemoveCommandListener(OnClass, "setclass");
+			RemoveCommandListener(OnClass, "setclass");
 			RemoveCommandListener(OnVariant, "setvariant");
 			RemoveCommandListener(OnLoadout, "loadout");
 			
 			deathHook = false;
 			roundHook = false;
-			spawnHook = false;
-			teamHook = false;
-			commandHooks = false;
+			//spawnHook = false;
+			//teamHook = false;
+			//commandHooks = false;
 		}
 
 		DisableDetour();		
@@ -190,12 +194,103 @@ public void OnMapInit()
 }
 
 //when players join use fakecommand setclass and loadout to spawn them
+//make sure players cant use the commands manually to spawn anytime or earlier than intended
 
-/*
+
 public void OnClientPutInServer(int client)
 {
-	g_clientFirstJoin[client] = true;
+	//int userid = GetClientUserId(client);
+	
+	g_canRespawn[client] = false;
+	g_clientFirstJoin[client] = false;
+	
+	if(g_needSpawnAssist)
+	{
+		g_clientFirstJoin[client] = true;
+	}
 }
+
+//spawn event is called when players join server as well
+public void OnPlayerSpawnPost(Event event, const char[] name, bool dontBroadcast)
+{
+	int useridClient = GetEventInt(event, "userid");
+	int client = GetClientOfUserId(useridClient);
+	
+	if(client <= 0 || client > MaxClients)
+	{
+		return;
+	}
+	PrintToServer("spawned");
+	g_canRespawn[client] = false;
+	//g_clientFirstJoin[client] = false;
+}
+
+public Action RespawnTimer(Handle timer, int userid)
+{
+	int client = GetClientOfUserId(userid);
+	roundTimeLeft = GameRules_GetPropFloat("m_fRoundTimeLeft");
+	
+	if(client == 0 || !IsClientInGame(client))
+	{
+		return Plugin_Stop;
+	}
+	
+	int GameState = GameRules_GetProp("m_iGameState");
+	
+	if(GameState != GAMESTATE_ROUND_ACTIVE || roundTimeLeft < 10.0)
+	{
+		return Plugin_Stop;
+	}
+	
+	g_canRespawn[client] = true;
+	
+	if(g_clientFirstJoin[client])
+	{
+		PrintToServer("first join");
+		
+		RequestFrame(DoRespawnCommands, client);
+
+		//SetPlayerClass(client, 1);
+		
+		CreateTimer(1.0, ResetJoin, userid, TIMER_FLAG_NO_MAPCHANGE);
+		return Plugin_Stop;
+	}
+	
+	PrintToServer("showing class menu");
+	
+	ShowClassMenu(client);
+	 
+	return Plugin_Stop;
+}
+
+void DoRespawnCommands(int client)
+{
+	if(GetPlayerXP(client) >= 0)
+	{
+		ClientCommand(client, "setclass 2;setvariant 1;loadout 4");
+	}
+	else
+	{
+		ClientCommand(client, "setclass 1;setvariant 1;loadout 0");
+	}
+}
+
+public Action ResetJoin(Handle timer, int userid)
+{
+	PrintToServer("reset join");
+	
+	int client = GetClientOfUserId(userid);
+	
+	if(client <= 0 || client > MaxClients)
+	{
+		return Plugin_Stop;
+	}
+	
+	g_clientFirstJoin[client] = false;
+	
+	return Plugin_Stop;
+}
+
 
 public void OnPlayerTeam(Event event, const char[] name, bool dontBroadcast)
 {
@@ -207,21 +302,32 @@ public void OnPlayerTeam(Event event, const char[] name, bool dontBroadcast)
 		return;
 	}
 	
+	if(!g_clientFirstJoin[client])
+	{
+		return;
+	}
+	
+	if (event.GetInt("team") <= TEAM_SPECTATOR)
+	{
+		return;
+	}
+	
+	/*
 	int GameState = GameRules_GetProp("m_iGameState");
 	
 	if(GameState != GAMESTATE_ROUND_ACTIVE)
 	{
 		return;
 	}
+	*/
 	
-	RespawnNewClass(client);
-	if(g_clientFirstJoin[client])
+	if(g_needSpawnAssist)
 	{
-		SetPlayerClass(client, CLASS_RECON);
-		SetPlayerProps(client);
-		RequestFrame(ShowClassMenu, client);
+		PrintToServer("need assist");
+		CreateTimer(7.0, RespawnTimer, userid, TIMER_FLAG_NO_MAPCHANGE);
 	}
 }
+
 
 public Action OnClass(int client, const char[] command, int argc)
 {
@@ -233,12 +339,13 @@ public Action OnClass(int client, const char[] command, int argc)
 	
 	if(GameState == GAMESTATE_ROUND_OVER 
 	|| GameState == GAMESTATE_WAITING_FOR_PLAYERS
-	|| GameRules_GetProp("m_bFreezePeriod"))
+	|| GameRules_GetProp("m_bFreezePeriod")
+	|| !g_needSpawnAssist)
 	{
 		return Plugin_Continue;
 	}
 	
-	if(argc != 1 || !IsClientInGame(client))
+	if(argc != 1 || !IsClientInGame(client) || IsPlayerAlive(client) || g_clientFirstJoin[client])
 	{
 		return Plugin_Continue;
 	}
@@ -250,26 +357,31 @@ public Action OnClass(int client, const char[] command, int argc)
 		return Plugin_Continue;
 	}
 	
-	if(g_clientFirstJoin[client])
-	{
-		SetPlayerClass(client, iClass);
-	}
+	g_playerClass[client] = iClass;
 	
 	return Plugin_Continue;
 }
-*/
 
 void ShowClassMenu(int client)
 {
 	if (IsClientInGame(client))
 	{
+		PrintToServer("showing class menu 2");
+		
 		ClientCommand(client, "classmenu");
 	}
 }
 
 public Action OnVariant(int client, const char[] command, int argc)
 {
+	PrintToServer("on variant 0");
+	
 	if(!g_kothMap)
+	{
+		return Plugin_Continue;
+	}
+	
+	if(!g_needSpawnAssist || !g_canRespawn[client] || g_clientFirstJoin[client])
 	{
 		return Plugin_Continue;
 	}
@@ -278,7 +390,8 @@ public Action OnVariant(int client, const char[] command, int argc)
 	
 	if(GameState == GAMESTATE_ROUND_OVER 
 	|| GameState == GAMESTATE_WAITING_FOR_PLAYERS
-	|| GameRules_GetProp("m_bFreezePeriod"))
+	|| GameRules_GetProp("m_bFreezePeriod")
+	|| !g_needSpawnAssist)
 	{
 		return Plugin_Continue;
 	}
@@ -288,6 +401,10 @@ public Action OnVariant(int client, const char[] command, int argc)
 		return Plugin_Continue;
 	}
 	
+	PrintToServer("on variant");
+	
+	g_oldPlayerClass[client] = GetPlayerClass(client);
+	SetPlayerClass(client, g_playerClass[client]);
 	RequestFrame(ShowLoadoutMenu, client);
 	return Plugin_Continue;
 }
@@ -302,7 +419,14 @@ void ShowLoadoutMenu(int client)
 
 public Action OnLoadout(int client, const char[] command, int argc)
 {
+	PrintToServer("on loadout 0");
+	
 	if(!g_kothMap)
+	{
+		return Plugin_Continue;
+	}
+	
+	if(!g_needSpawnAssist || !g_canRespawn[client])
 	{
 		return Plugin_Continue;
 	}
@@ -330,6 +454,16 @@ public Action OnLoadout(int client, const char[] command, int argc)
 	{
 		PrintToChat(client, "[KoTH] Error: Somehow tried to pick invalid loadout");
 		return Plugin_Continue;
+	}
+	
+	PrintToServer("on loadout");
+	
+	if(!g_clientFirstJoin[client])
+	{
+		if(g_oldPlayerClass[client] > 0)
+		{
+			SetPlayerClass(client, g_oldPlayerClass[client]);
+		}
 	}
 	
 	RequestFrame(RespawnNewClass, client);
@@ -363,20 +497,6 @@ public Action OnPlayerDeathPre(Event event, const char[] name, bool dontBroadcas
 	return Plugin_Continue;
 }
 
-public Action RespawnTimer(Handle timer, int userid)
-{
-	int client = GetClientOfUserId(userid);
-	
-	if(client == 0 || !IsClientInGame(client))
-	{
-		return Plugin_Stop;
-	}
-	
-	ShowClassMenu(client);
-	 
-	return Plugin_Stop;
-}
-
 public void OnMapStart()
 {
 	if(!g_kothMap)
@@ -399,6 +519,8 @@ public void OnMapEnd()
 	StoreToAddress(view_as<Address>(0x2245556E), 'C', NumberType_Int8);
 	StoreToAddress(view_as<Address>(0x2245556F), 'T', NumberType_Int8);
 	StoreToAddress(view_as<Address>(0x22455570), 'G', NumberType_Int8);
+	
+	g_needSpawnAssist = false;
 }
 
 public void OnConfigsExecuted()
@@ -409,7 +531,7 @@ public void OnConfigsExecuted()
 	}
 	
 	FindConVar("neo_score_limit").IntValue = 5;
-	FindConVar("neo_round_timelimit").FloatValue = 6.26;
+	FindConVar("neo_round_timelimit").FloatValue = 6.53;
 }
 
 void DisableDetour() 
@@ -512,19 +634,8 @@ void ResetWin()
 	
 	g_jinStart = false;
 	g_nsfStart = false;
-}
-
-public void OnPlayerSpawnPost(Event event, const char[] name, bool dontBroadcast)
-{
-	int useridClient = GetEventInt(event, "userid");
-	int client = GetClientOfUserId(useridClient);
 	
-	if(client <= 0 || client > MaxClients)
-	{
-		return;
-	}
-	
-	g_clientFirstJoin[client] = false;
+	g_needSpawnAssist = false;
 }
 
 // if standing on trigger before hill activates nothing happens
@@ -796,14 +907,17 @@ public void OnRoundStartPost(Event event, const char[] name, bool dontBroadcast)
 	
 	if(!IsValidHandle(g_hillTimer))
 	{
-		g_hillTimer = CreateTimer(30.0, HillTimer, _, TIMER_FLAG_NO_MAPCHANGE);
+		g_hillTimer = CreateTimer(32.0, HillTimer, _, TIMER_FLAG_NO_MAPCHANGE);
 		PrintToServer("creating hill timer");
 	}
+	
+	g_needSpawnAssist = false;
 }
 
 public Action HillTimer(Handle timer)
 {
 	g_hillActive = true;
+	g_needSpawnAssist = true;
 	
 	if(g_hillHasJin && !g_hillHasNSF && !g_jinStart)
 	{
@@ -859,8 +973,11 @@ void RespawnNewClass(int client)
 	}
 	
 	SDKCall(call, client);
+	
+	g_canRespawn[client] = false;
 }
 
+/*
 void SetJoinProps(int client) //class aux etc?
 {
 	SetEntProp(client, Prop_Data, "m_fFlags", 65664);
@@ -898,6 +1015,7 @@ void SetJoinProps(int client) //class aux etc?
 	SetEntityFlags(client, GetEntityFlags(client) & ~FL_GODMODE);
 	ChangeEdictState(client, 0);
 }
+*/
 
 void SetPlayerProps(int client)
 {
@@ -955,6 +1073,9 @@ public void OnClientDisconnect_Post(int client)
 	{
 		return;
 	}
+	
+	g_canRespawn[client] = true;
+	g_clientFirstJoin[client] = false;
 }
 
 void PrintMsg(const char[] msg, int flags, any ...)
