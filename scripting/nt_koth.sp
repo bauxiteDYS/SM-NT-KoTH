@@ -4,7 +4,7 @@
 #include <dhooks>
 #include <neotokyo>
 
-#define DEBUG true
+#define DEBUG false
 #define PRNT_SRVR (1<<0)
 #define PRNT_CNSL (1<<1)
 #define PRNT_CHT (1<<2)
@@ -12,25 +12,17 @@
 #define PRNT_THREE 7
 #define PRNT_ALL 15
 
-#define LIFE_ALIVE 0
-#define OBS_MODE_NONE 0
-#define DAMAGE_YES 2
-#define TRAIN_NEW 0xc0
-#define SOLID_BBOX 2
-#define EF_NODRAW 0x020
-#define SF_NORESPAWN (1 << 30)
-#define DEATH_COMPLETE_SEC 10.0
-
 #define GAMEHUD_TIE 3
 #define GAMEHUD_JINRAI 4
 #define GAMEHUD_NSF 5
+
 #define BOTH_TEAMS 5
 
 public Plugin myinfo = {
 	name = "NT King of the hill mode",
 	description = "Enables KoTH mode",
 	author = "bauxite",
-	version = "0.1.6",
+	version = "0.2.3",
 	url = "",
 };
 
@@ -39,42 +31,34 @@ DynamicDetour ddWin;
 Handle g_hillTimer = null;
 Handle g_winTimer = null;
 Handle g_hudTimer = null;
+Handle g_stateTimer = null;
+Handle g_godTimer[NEO_MAXPLAYERS+1];
 
 bool g_lateLoad;
 bool g_kothMap;
-
 bool g_hillActive;
+bool g_hillHasNSF;
+bool g_hillHasJin;
+bool g_jinStart;
+bool g_nsfStart;
 
+int g_nsfOnHill;
+int g_jinOnHill;
+int g_jinSprite;
+int g_nsfSprite;
+int g_noneSprite;
+int g_inacSprite;
 int red;
 int green;
 int blue;
 int alpha;
 
-int g_nsfOnHill;
-int g_jinOnHill;
-
-bool g_hillHasNSF;
-bool g_hillHasJin;
-
-bool g_jinStart;
-bool g_nsfStart;
-
-bool g_clientFirstJoin[NEO_MAXPLAYERS+1];
-
-float curTime;
 float g_startTime;
-
 float g_jinTime;
 float g_nsfTime;
-
+float curTime;
 float roundTimeLeft;
-//float g_deathTime[NEO_MAXPLAYERS+1];
 
-bool g_needSpawnAssist;
-bool g_canRespawn[NEO_MAXPLAYERS+1];
-
-int g_oldPlayerClass[NEO_MAXPLAYERS+1];
-int g_playerClass[NEO_MAXPLAYERS+1];
 
 stock int GetOpposingTeam(int team)
 {
@@ -126,9 +110,6 @@ public void OnMapInit()
 {	
 	static bool deathHook;
 	static bool roundHook;
-	//static bool spawnHook;
-	//static bool teamHook;
-	//static bool commandHooks;
 	
 	char mapName[32];
 	GetCurrentMap(mapName, sizeof(mapName));
@@ -136,7 +117,13 @@ public void OnMapInit()
 	if(StrContains(mapName, "_koth", false) != -1)
 	{
 		g_kothMap = true;
-		ServerCommand("sm plugins unload nt_wincond"); 
+		
+		// we do our own win checks
+		ServerCommand("sm plugins unload nt_wincond");
+		
+		// these dont work well with "respawns"
+		ServerCommand("sm plugins unload nt_assist");
+		ServerCommand("sm plugins unload nt_damage");
 		
 		if(HookEventEx("player_death", OnPlayerDeathPre, EventHookMode_Pre))
 		{
@@ -148,23 +135,8 @@ public void OnMapInit()
 			roundHook = true;
 		}
 		
-		if(HookEvent("player_spawn", OnPlayerSpawnPost, EventHookMode_Post))
-		{
-			//spawnHook = true;
-		}
-		
-		
-		if (HookEventEx("player_team", OnPlayerTeam, EventHookMode_Post))
-		{
-			//teamHook = true;
-		}
-		
-		AddCommandListener(OnClass, "setclass");
-		AddCommandListener(OnVariant, "setvariant");
-		AddCommandListener(OnLoadout, "loadout");
-		
-		//commandHooks = true;
-		
+		HookEvent("player_spawn", OnPlayerSpawnPost, EventHookMode_Post);
+
 		CreateDetour();
 	}
 	else
@@ -176,109 +148,82 @@ public void OnMapInit()
 			UnhookEvent("player_death", OnPlayerDeathPre, EventHookMode_Pre);
 			UnhookEvent("game_round_start", OnRoundStartPost, EventHookMode_Post);
 			UnhookEvent("player_spawn", OnPlayerSpawnPost, EventHookMode_Post);
-			UnhookEvent("player_team", OnPlayerTeam, EventHookMode_Post);
-			
-			RemoveCommandListener(OnClass, "setclass");
-			RemoveCommandListener(OnVariant, "setvariant");
-			RemoveCommandListener(OnLoadout, "loadout");
 			
 			deathHook = false;
 			roundHook = false;
-			//spawnHook = false;
-			//teamHook = false;
-			//commandHooks = false;
 		}
 
 		DisableDetour();		
 	}
 }
 
-//when players join use fakecommand setclass and loadout to spawn them
-//make sure players cant use the commands manually to spawn anytime or earlier than intended
-
+//hook weapon drop and remove them after 30s?
+//make sure players cant spawn earlier than intended like rejoining
 
 public void OnClientPutInServer(int client)
 {
-	//int userid = GetClientUserId(client);
-	
-	g_canRespawn[client] = false;
-	g_clientFirstJoin[client] = false;
-	
-	if(g_needSpawnAssist)
+	if(!g_kothMap)
 	{
-		g_clientFirstJoin[client] = true;
+		return;
 	}
+	
+	if(IsFakeClient(client))
+	{
+		return;
+	}
+	
+	SDKHook(client, SDKHook_WeaponDrop, OnWeaponDrop);
+}
+
+public Action OnWeaponDrop(int client, int weapon)
+{
+	if(!g_kothMap)
+	{
+		return Plugin_Continue;
+	}
+	
+	if(!IsPlayerAlive(client))
+	{
+		return Plugin_Handled;
+	}
+	
+	return Plugin_Continue;
 }
 
 //spawn event is called when players join server as well
+
 public void OnPlayerSpawnPost(Event event, const char[] name, bool dontBroadcast)
 {
-	int useridClient = GetEventInt(event, "userid");
-	int client = GetClientOfUserId(useridClient);
+	int userid = GetEventInt(event, "userid");
+	int client = GetClientOfUserId(userid);
 	
 	if(client <= 0 || client > MaxClients)
 	{
 		return;
 	}
+	
+	SetEntityFlags(client, GetEntityFlags(client) | FL_GODMODE);
+	PrintCenterText(client, "2s spawn protection");
+	
+	if(IsValidHandle(g_godTimer[client]))
+	{
+		CloseHandle(g_godTimer[client]);
+		
+		#if DEBUG
+		PrintToServer("deleting god timer");
+		#endif
+	}
+	
+	g_godTimer[client] = CreateTimer(2.0, RemoveGod, userid, TIMER_FLAG_NO_MAPCHANGE);
+		
+	#if DEBUG
 	PrintToServer("spawned");
-	g_canRespawn[client] = false;
-	//g_clientFirstJoin[client] = false;
+	PrintToServer("creating god timer");
+	#endif
 }
 
-public Action RespawnTimer(Handle timer, int userid)
+public Action RemoveGod(Handle timer, int userid)
 {
-	int client = GetClientOfUserId(userid);
-	roundTimeLeft = GameRules_GetPropFloat("m_fRoundTimeLeft");
-	
-	if(client == 0 || !IsClientInGame(client))
-	{
-		return Plugin_Stop;
-	}
-	
-	int GameState = GameRules_GetProp("m_iGameState");
-	
-	if(GameState != GAMESTATE_ROUND_ACTIVE || roundTimeLeft < 10.0)
-	{
-		return Plugin_Stop;
-	}
-	
-	g_canRespawn[client] = true;
-	
-	if(g_clientFirstJoin[client])
-	{
-		PrintToServer("first join");
-		
-		RequestFrame(DoRespawnCommands, client);
-
-		//SetPlayerClass(client, 1);
-		
-		CreateTimer(1.0, ResetJoin, userid, TIMER_FLAG_NO_MAPCHANGE);
-		return Plugin_Stop;
-	}
-	
-	PrintToServer("showing class menu");
-	
-	ShowClassMenu(client);
-	 
-	return Plugin_Stop;
-}
-
-void DoRespawnCommands(int client)
-{
-	if(GetPlayerXP(client) >= 0)
-	{
-		ClientCommand(client, "setclass 2;setvariant 1;loadout 4");
-	}
-	else
-	{
-		ClientCommand(client, "setclass 1;setvariant 1;loadout 0");
-	}
-}
-
-public Action ResetJoin(Handle timer, int userid)
-{
-	PrintToServer("reset join");
-	
 	int client = GetClientOfUserId(userid);
 	
 	if(client <= 0 || client > MaxClients)
@@ -286,188 +231,18 @@ public Action ResetJoin(Handle timer, int userid)
 		return Plugin_Stop;
 	}
 	
-	g_clientFirstJoin[client] = false;
+	if(!IsClientInGame(client))
+	{
+		return Plugin_Stop;
+	}
+	
+	SetEntityFlags(client, GetEntityFlags(client) & ~FL_GODMODE);
+	
+	#if DEBUG
+	PrintToServer("removed god");
+	#endif
 	
 	return Plugin_Stop;
-}
-
-
-public void OnPlayerTeam(Event event, const char[] name, bool dontBroadcast)
-{
-	int userid = event.GetInt("userid");
-	int client = GetClientOfUserId(userid);
-	
-	if (client == 0 || !IsClientInGame(client) || IsFakeClient(client))
-	{
-		return;
-	}
-	
-	if(!g_clientFirstJoin[client])
-	{
-		return;
-	}
-	
-	if (event.GetInt("team") <= TEAM_SPECTATOR)
-	{
-		return;
-	}
-	
-	/*
-	int GameState = GameRules_GetProp("m_iGameState");
-	
-	if(GameState != GAMESTATE_ROUND_ACTIVE)
-	{
-		return;
-	}
-	*/
-	
-	if(g_needSpawnAssist)
-	{
-		PrintToServer("need assist");
-		CreateTimer(7.0, RespawnTimer, userid, TIMER_FLAG_NO_MAPCHANGE);
-	}
-}
-
-
-public Action OnClass(int client, const char[] command, int argc)
-{
-	if(!g_kothMap)
-	{
-		return Plugin_Continue;
-	}
-	int GameState = GameRules_GetProp("m_iGameState");
-	
-	if(GameState == GAMESTATE_ROUND_OVER 
-	|| GameState == GAMESTATE_WAITING_FOR_PLAYERS
-	|| GameRules_GetProp("m_bFreezePeriod")
-	|| !g_needSpawnAssist)
-	{
-		return Plugin_Continue;
-	}
-	
-	if(argc != 1 || !IsClientInGame(client) || IsPlayerAlive(client) || g_clientFirstJoin[client])
-	{
-		return Plugin_Continue;
-	}
-
-	int iClass = GetCmdArgInt(1);
-	if(iClass <= CLASS_NONE || iClass > CLASS_SUPPORT)
-	{
-		PrintToChat(client, "[KoTH] Error: Somehow tried to pick invalid class");
-		return Plugin_Continue;
-	}
-	
-	g_playerClass[client] = iClass;
-	
-	return Plugin_Continue;
-}
-
-void ShowClassMenu(int client)
-{
-	if (IsClientInGame(client))
-	{
-		PrintToServer("showing class menu 2");
-		
-		ClientCommand(client, "classmenu");
-	}
-}
-
-public Action OnVariant(int client, const char[] command, int argc)
-{
-	PrintToServer("on variant 0");
-	
-	if(!g_kothMap)
-	{
-		return Plugin_Continue;
-	}
-	
-	if(!g_needSpawnAssist || !g_canRespawn[client] || g_clientFirstJoin[client])
-	{
-		return Plugin_Continue;
-	}
-	
-	int GameState = GameRules_GetProp("m_iGameState");
-	
-	if(GameState == GAMESTATE_ROUND_OVER 
-	|| GameState == GAMESTATE_WAITING_FOR_PLAYERS
-	|| GameRules_GetProp("m_bFreezePeriod")
-	|| !g_needSpawnAssist)
-	{
-		return Plugin_Continue;
-	}
-	
-	if(!IsClientInGame(client) || IsPlayerAlive(client))
-	{
-		return Plugin_Continue;
-	}
-	
-	PrintToServer("on variant");
-	
-	g_oldPlayerClass[client] = GetPlayerClass(client);
-	SetPlayerClass(client, g_playerClass[client]);
-	RequestFrame(ShowLoadoutMenu, client);
-	return Plugin_Continue;
-}
-
-void ShowLoadoutMenu(int client)
-{
-	if (IsClientInGame(client))
-	{
-		ClientCommand(client, "loadoutmenu");
-	}
-}
-
-public Action OnLoadout(int client, const char[] command, int argc)
-{
-	PrintToServer("on loadout 0");
-	
-	if(!g_kothMap)
-	{
-		return Plugin_Continue;
-	}
-	
-	if(!g_needSpawnAssist || !g_canRespawn[client])
-	{
-		return Plugin_Continue;
-	}
-	
-	roundTimeLeft = GameRules_GetPropFloat("m_fRoundTimeLeft");
-	
-	int GameState = GameRules_GetProp("m_iGameState");
-	
-	if(GameState == GAMESTATE_ROUND_OVER 
-	|| GameState == GAMESTATE_WAITING_FOR_PLAYERS
-	|| GameRules_GetProp("m_bFreezePeriod")
-	|| roundTimeLeft < 10.0)
-	{
-		return Plugin_Continue;
-	}
-	
-	if(argc != 1 || !IsClientInGame(client) || IsPlayerAlive(client))
-	{
-		return Plugin_Continue;
-	}
-	
-	int iLoadout = GetCmdArgInt(1);
-	
-	if(iLoadout < 0 || iLoadout > 11)
-	{
-		PrintToChat(client, "[KoTH] Error: Somehow tried to pick invalid loadout");
-		return Plugin_Continue;
-	}
-	
-	PrintToServer("on loadout");
-	
-	if(!g_clientFirstJoin[client])
-	{
-		if(g_oldPlayerClass[client] > 0)
-		{
-			SetPlayerClass(client, g_oldPlayerClass[client]);
-		}
-	}
-	
-	RequestFrame(RespawnNewClass, client);
-	return Plugin_Continue;
 }
 
 public Action OnPlayerDeathPre(Event event, const char[] name, bool dontBroadcast)
@@ -476,24 +251,7 @@ public Action OnPlayerDeathPre(Event event, const char[] name, bool dontBroadcas
 	{
 		return Plugin_Continue;
 	}
-	
-	roundTimeLeft = GameRules_GetPropFloat("m_fRoundTimeLeft");
-	
-	//int victim = GetClientOfUserId(GetEventInt(event, "userid"));
-	//int attacker = GetClientOfUserId(GetEventInt(event, "attacker"));
-	
-	int userid = GetEventInt(event, "userid");
-	
-	int GameState = GameRules_GetProp("m_iGameState");
-	
-	if(GameState == GAMESTATE_ROUND_OVER 
-	|| GameState == GAMESTATE_WAITING_FOR_PLAYERS 
-	|| roundTimeLeft < 22.0)
-	{
-		return Plugin_Continue;
-	}
-	
-	CreateTimer(11.0, RespawnTimer, userid, TIMER_FLAG_NO_MAPCHANGE);
+
 	return Plugin_Continue;
 }
 
@@ -507,6 +265,64 @@ public void OnMapStart()
 	StoreToAddress(view_as<Address>(0x2245556E), 'K', NumberType_Int8);
 	StoreToAddress(view_as<Address>(0x2245556F), 'T', NumberType_Int8);
 	StoreToAddress(view_as<Address>(0x22455570), 'H', NumberType_Int8);
+	
+	g_jinSprite = FindEntityByTargetname("env_sprite", "point_sprite_jin");
+	g_nsfSprite = FindEntityByTargetname("env_sprite", "point_sprite_nsf");
+	g_noneSprite = FindEntityByTargetname("env_sprite", "point_sprite_none");
+	g_inacSprite = FindEntityByTargetname("env_sprite", "point_sprite_inactive");
+	
+	CreateTimer(0.25, ToggleSprites, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+}
+
+public Action ToggleSprites(Handle timer)
+{
+	
+	//static bool //b_inac = true;
+	//static bool //b_none = true;
+	//static bool //b_jin = true;
+	//static bool //b_nsf = true;
+	
+	
+	if(!g_hillActive)
+	{
+		// b_inac = true;
+		// rest false
+	
+		AcceptEntityInput(g_inacSprite, "ShowSprite", -1, -1);
+		AcceptEntityInput(g_noneSprite, "HideSprite", -1, -1);
+		AcceptEntityInput(g_jinSprite, "HideSprite", -1, -1);
+		AcceptEntityInput(g_nsfSprite, "HideSprite", -1, -1);
+	}
+	else if(g_jinStart)
+	{
+		// b_jin = true;
+		// rest false
+		
+		AcceptEntityInput(g_inacSprite, "HideSprite", -1, -1);
+		AcceptEntityInput(g_noneSprite, "HideSprite", -1, -1);
+		AcceptEntityInput(g_jinSprite, "ShowSprite", -1, -1);
+		AcceptEntityInput(g_nsfSprite, "HideSprite", -1, -1);
+	}
+	else if(g_nsfStart)
+	{
+		// b_nsf = true;
+		
+		AcceptEntityInput(g_inacSprite, "HideSprite", -1, -1);
+		AcceptEntityInput(g_noneSprite, "HideSprite", -1, -1);
+		AcceptEntityInput(g_nsfSprite, "ShowSprite", -1, -1);
+		AcceptEntityInput(g_jinSprite, "HideSprite", -1, -1);
+	}
+	else
+	{
+		//b_none = true;
+		
+		AcceptEntityInput(g_inacSprite, "HideSprite", -1, -1);
+		AcceptEntityInput(g_noneSprite, "ShowSprite", -1, -1);
+		AcceptEntityInput(g_jinSprite, "HideSprite", -1, -1);
+		AcceptEntityInput(g_nsfSprite, "HideSprite", -1, -1);
+	}
+		
+	return Plugin_Continue;
 }
 
 public void OnMapEnd()
@@ -519,8 +335,6 @@ public void OnMapEnd()
 	StoreToAddress(view_as<Address>(0x2245556E), 'C', NumberType_Int8);
 	StoreToAddress(view_as<Address>(0x2245556F), 'T', NumberType_Int8);
 	StoreToAddress(view_as<Address>(0x22455570), 'G', NumberType_Int8);
-	
-	g_needSpawnAssist = false;
 }
 
 public void OnConfigsExecuted()
@@ -530,8 +344,17 @@ public void OnConfigsExecuted()
 		return;
 	}
 	
-	FindConVar("neo_score_limit").IntValue = 5;
-	FindConVar("neo_round_timelimit").FloatValue = 6.53;
+	FindConVar("neo_score_limit").IntValue = 4;
+	FindConVar("neo_round_timelimit").FloatValue = 6.52;
+	
+	ConVar roundStyle = FindConVar("sm_competitive_round_style");
+	ConVar roundLimit = FindConVar("sm_competitive_round_limit");
+	
+	if(roundStyle != null && roundLimit != null)
+	{
+		roundStyle.IntValue = 2;
+		roundLimit.IntValue = 4;
+	}
 }
 
 void DisableDetour() 
@@ -575,13 +398,16 @@ void CreateDetour()
 
 MRESReturn CheckWinCondition(Address pThis, DHookReturn hReturn)
 {
+	#if DEBUG
+	PrintToChatAll("1");
+	#endif
+	
 	if(CheckingForWin())
 	{
 		return MRES_Supercede;
 	}
 	
 	return MRES_Supercede;
-	//return MRES_Ignored;
 }
 
 bool CheckingForWin() 
@@ -590,8 +416,9 @@ bool CheckingForWin()
 	
 	if (roundTimeLeft == 0.0)
 	{
-		PrintMsg("[KoTH] Tie", PRNT_CHT | PRNT_CNSL);
+		ResetWin();
 		EndRoundAndShowWinner(BOTH_TEAMS);
+		PrintMsg("[KoTH] Tie", PRNT_CHT | PRNT_CNSL);
 		return true;
 	}
 	
@@ -604,21 +431,40 @@ void ResetWin()
 	{
 		CloseHandle(g_winTimer);
 		g_winTimer = null;
+		
+		#if DEBUG
 		PrintToServer("deleting win timer");
+		#endif
 	}
 	
 	if(IsValidHandle(g_hudTimer))
 	{
 		CloseHandle(g_hudTimer);
 		g_hudTimer = null;
+		
+		#if DEBUG
 		PrintToServer("deleting hud timer");
+		#endif
 	}
 	
 	if(IsValidHandle(g_hillTimer))
 	{
 		CloseHandle(g_hillTimer);
 		g_hillTimer = null;
+		
+		#if DEBUG
 		PrintToServer("deleting hill timer");
+		#endif
+	}
+	
+	if(IsValidHandle(g_stateTimer))
+	{
+		CloseHandle(g_stateTimer);
+		g_hillTimer = null;
+		
+		#if DEBUG
+		PrintToServer("deleting state timer");
+		#endif
 	}
 	
 	g_hillActive = false;
@@ -635,10 +481,18 @@ void ResetWin()
 	g_jinStart = false;
 	g_nsfStart = false;
 	
-	g_needSpawnAssist = false;
+	for(int client = 1; client <= MaxClients; client++)
+	{
+		if(!IsClientInGame(client) || IsFakeClient(client))
+		{
+			continue;
+		}
+		
+		SetPlayerXP(client, 0);
+		SetPlayerDeaths(client, 0);
+		SetPlayerRank(client, RANK_PRIVATE);
+	}
 }
-
-// if standing on trigger before hill activates nothing happens
 
 void Trigger_OnStartTouch(const char[] output, int caller, int activator, float delay)
 {
@@ -681,7 +535,7 @@ void Trigger_OnStartTouch(const char[] output, int caller, int activator, float 
 		g_nsfStart = false;
 		g_jinStart = false;
 	}
-	else
+	else if(!g_hillHasJin && !g_hillHasNSF)
 	{
 		g_nsfStart = false;
 		g_jinStart = false;
@@ -742,11 +596,6 @@ void Trigger_OnEndTouch(const char[] output, int caller, int activator, float de
 		g_nsfStart = false;
 		g_jinStart = false;
 	}
-	else
-	{
-		g_nsfStart = false;
-		g_jinStart = false;
-	}
 }
 
 public Action WinTimer(Handle timer)
@@ -758,7 +607,14 @@ public Action WinTimer(Handle timer)
 		#endif
 		return Plugin_Continue;
 	}
-
+	
+	roundTimeLeft = GameRules_GetPropFloat("m_fRoundTimeLeft");
+	
+	if(roundTimeLeft <= 15.0)
+	{
+		GameRules_SetProp("m_iGameState", GAMESTATE_ROUND_ACTIVE);
+	}
+		
 	curTime = GetGameTime();
 	
 	if(g_jinStart)
@@ -772,21 +628,23 @@ public Action WinTimer(Handle timer)
 		g_startTime = curTime;
 	}
 	
-	if(g_jinTime >= 15.0)
+	if(g_jinTime >= 60.0)
 	{
 		g_winTimer = null;
 		
 		ResetWin();
+		GameRules_SetProp("m_iGameState", GAMESTATE_ROUND_ACTIVE);
 		EndRoundAndShowWinner(TEAM_JINRAI);
 		PrintMsg("[KoTH] Jinrai claims the hill!", PRNT_ALL);
 		
 		return Plugin_Stop;
 	}
-	else if(g_nsfTime >= 15.0)
+	else if(g_nsfTime >= 60.0)
 	{
 		g_winTimer = null;
 
 		ResetWin();
+		GameRules_SetProp("m_iGameState", GAMESTATE_ROUND_ACTIVE);
 		EndRoundAndShowWinner(TEAM_NSF)
 		PrintMsg("[KoTH] NSF claims the hill!", PRNT_ALL);
 		
@@ -836,15 +694,14 @@ public Action HudTimer(Handle timer)
 			alpha = 0;
 		}
 		
-		SetHudTextParams(1.0, 0.79, 1.0, red, green, blue, alpha, 1, 0.0, 0.0, 0.0); 
+		SetHudTextParams(0.36, 0.0, 1.0, 25, 225, 0, 0, 1, 0.0, 0.0, 0.0); 
+		ShowHudText(i, 5, "Jin: %.2f", g_jinTime);
+		
+		SetHudTextParams(0.48, 0.0, 1.0, red, green, blue, alpha, 1, 0.0, 0.0, 0.0); 
 		ShowHudText(i, 4, "KoTH");
-		
-		
-		SetHudTextParams(1.0, 0.83, 1.0, 25, 225, 0, 0, 1, 0.0, 0.0, 0.0); 
-		ShowHudText(i, 5, "%.2f: JIN", g_jinTime);
 	
-		SetHudTextParams(1.0, 0.87, 1.0, 0, 100, 255, 0, 1, 0.0, 0.0, 0.0);
-		ShowHudText(i, 6, "%.2f: NSF", g_nsfTime);
+		SetHudTextParams(0.56, 0.0, 1.0, 0, 100, 255, 0, 1, 0.0, 0.0, 0.0);
+		ShowHudText(i, 6, "  NSF: %.2f", g_nsfTime);
 	}
 	
 	return Plugin_Continue;
@@ -899,25 +756,46 @@ public void OnRoundStartPost(Event event, const char[] name, bool dontBroadcast)
 	HookSingleEntityOutput(trigger, "OnStartTouch", Trigger_OnStartTouch);
 	HookSingleEntityOutput(trigger, "OnEndTouch", Trigger_OnEndTouch);
 	
-	if(!IsValidHandle(g_hudTimer))
+	if(!IsValidHandle(g_hudTimer)) 
 	{
+	// have this running all the time and animate sprites inside this as well
+	// store sprite state in an array?
+	
 		g_hudTimer = CreateTimer(0.31, HudTimer, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+		
+		#if DEBUG
 		PrintToServer("creating hud timer");
+		#endif
 	}
 	
 	if(!IsValidHandle(g_hillTimer))
 	{
-		g_hillTimer = CreateTimer(32.0, HillTimer, _, TIMER_FLAG_NO_MAPCHANGE);
+		g_hillTimer = CreateTimer(31.0, HillTimer, _, TIMER_FLAG_NO_MAPCHANGE);
+		
+		#if DEBUG
 		PrintToServer("creating hill timer");
+		#endif
 	}
 	
-	g_needSpawnAssist = false;
+	if(!IsValidHandle(g_stateTimer))
+	{
+		g_hillTimer = CreateTimer(24.0, GameStateTimer, _, TIMER_FLAG_NO_MAPCHANGE);
+		
+		#if DEBUG
+		PrintToServer("creating state timer");
+		#endif
+	}
+}
+
+public Action GameStateTimer(Handle timer)
+{
+	GameRules_SetProp("m_iGameState", GAMESTATE_WAITING_FOR_PLAYERS);
+	return Plugin_Stop;
 }
 
 public Action HillTimer(Handle timer)
 {
 	g_hillActive = true;
-	g_needSpawnAssist = true;
 	
 	if(g_hillHasJin && !g_hillHasNSF && !g_jinStart)
 	{
@@ -945,126 +823,13 @@ public Action HillTimer(Handle timer)
 	if(!IsValidHandle(g_winTimer))
 	{
 		g_winTimer = CreateTimer(0.1, WinTimer, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+		
+		#if DEBUG
 		PrintToServer("creating win timer");
+		#endif
 	}
 	
 	return Plugin_Stop;
-}
-
-void RespawnNewClass(int client)
-{
-	if(!IsClientInGame(client))
-	{
-		return;
-	}
-
-	SetPlayerProps(client);
-	static Handle call = INVALID_HANDLE;
-	
-	if (call == INVALID_HANDLE)
-	{
-		StartPrepSDKCall(SDKCall_Player);
-		PrepSDKCall_SetSignature(SDKLibrary_Server, "\x56\x8B\xF1\x8B\x06\x8B\x90\xBC\x04\x00\x00\x57\xFF\xD2\x8B\x06", 16);
-		call = EndPrepSDKCall();
-		if (call == INVALID_HANDLE)
-		{
-			SetFailState("Failed to prepare SDK call");
-		}
-	}
-	
-	SDKCall(call, client);
-	
-	g_canRespawn[client] = false;
-}
-
-/*
-void SetJoinProps(int client) //class aux etc?
-{
-	SetEntProp(client, Prop_Data, "m_fFlags", 65664);
-	SetEntProp(client, Prop_Send, "m_iClassType", 1);
-	SetEntProp(client, Prop_Send, "m_iLives", 1);
-	SetEntProp(client, Prop_Send, "m_iObserverMode", OBS_MODE_NONE);
-	SetEntProp(client, Prop_Send, "m_iHealth", 100);
-	SetEntProp(client, Prop_Send, "m_lifeState", 3);
-	SetEntProp(client, Prop_Send, "deadflag", 0);
-	SetEntPropFloat(client, Prop_Send, "m_flDeathTime", 0.0);
-	SetEntProp(client, Prop_Send, "m_bDucked", false);
-	SetEntProp(client, Prop_Send, "m_bDucking", false);
-	SetEntProp(client, Prop_Send, "m_bDrawViewmodel", true);
-	SetEntProp(client, Prop_Send, "m_nRenderFX", 0);
-	SetEntPropFloat(client, Prop_Send, "m_flNextAttack", GetGameTime());
-	SetEntPropFloat(client, Prop_Send, "m_flMaxspeed", 0.0);
-	SetEntPropFloat(client, Prop_Send, "m_flFallVelocity", 0.0);
-	SetEntProp(client, Prop_Send, "m_nSolidType", SOLID_BBOX);
-	SetEntProp(client, Prop_Data, "m_fInitHUD", 1);
-	SetEntPropFloat(client, Prop_Data, "m_DmgTake", 0.0);
-	SetEntPropFloat(client, Prop_Data, "m_DmgSave", 0.0);
-	SetEntProp(client, Prop_Data, "m_afPhysicsFlags", 0);
-	SetEntProp(client, Prop_Data, "m_bitsDamageType", 0);
-	SetEntProp(client, Prop_Data, "m_bitsHUDDamage", -1);
-	SetEntProp(client, Prop_Data, "m_takedamage", DAMAGE_YES);
-	SetEntityMoveType(client, MOVETYPE_WALK);
-	// declaring as variables for older sm compat
-	float campvsorigin[3];
-	float hackedgunpos[3] = { 0.0, 32.0, 0.0 };
-	SetEntPropVector(client, Prop_Data, "m_vecCameraPVSOrigin", campvsorigin);
-	SetEntPropVector(client, Prop_Data, "m_HackedGunPos", hackedgunpos);
-	SetEntProp(client, Prop_Data, "m_bPlayerUnderwater", false);
-	SetEntProp(client, Prop_Data, "m_iTrain", TRAIN_NEW);
-	SetInvisible(client, false);
-	SetEntityFlags(client, GetEntityFlags(client) & ~FL_GODMODE);
-	ChangeEdictState(client, 0);
-}
-*/
-
-void SetPlayerProps(int client)
-{
-	SetEntProp(client, Prop_Send, "m_iLives", 1);
-	SetEntProp(client, Prop_Send, "m_iObserverMode", OBS_MODE_NONE);
-	SetEntProp(client, Prop_Send, "m_iHealth", 100);
-	SetEntProp(client, Prop_Send, "m_lifeState", LIFE_ALIVE);
-	SetEntProp(client, Prop_Send, "deadflag", 0);
-	SetEntPropFloat(client, Prop_Send, "m_flDeathTime", 0.0);
-	SetEntProp(client, Prop_Send, "m_bDucked", false);
-	SetEntProp(client, Prop_Send, "m_bDucking", false);
-	SetEntProp(client, Prop_Send, "m_bDrawViewmodel", true);
-	SetEntProp(client, Prop_Send, "m_nRenderFX", 0);
-	SetEntPropFloat(client, Prop_Send, "m_flNextAttack", GetGameTime());
-	SetEntPropFloat(client, Prop_Send, "m_flMaxspeed", 0.0);
-	SetEntPropFloat(client, Prop_Send, "m_flFallVelocity", 0.0);
-	SetEntProp(client, Prop_Send, "m_nSolidType", SOLID_BBOX);
-	SetEntProp(client, Prop_Data, "m_fInitHUD", 1);
-	SetEntPropFloat(client, Prop_Data, "m_DmgTake", 0.0);
-	SetEntPropFloat(client, Prop_Data, "m_DmgSave", 0.0);
-	SetEntProp(client, Prop_Data, "m_afPhysicsFlags", 0);
-	SetEntProp(client, Prop_Data, "m_bitsDamageType", 0);
-	SetEntProp(client, Prop_Data, "m_bitsHUDDamage", -1);
-	SetEntProp(client, Prop_Data, "m_takedamage", DAMAGE_YES);
-	SetEntityMoveType(client, MOVETYPE_WALK);
-	// declaring as variables for older sm compat
-	float campvsorigin[3];
-	float hackedgunpos[3] = { 0.0, 32.0, 0.0 };
-	SetEntPropVector(client, Prop_Data, "m_vecCameraPVSOrigin", campvsorigin);
-	SetEntPropVector(client, Prop_Data, "m_HackedGunPos", hackedgunpos);
-	SetEntProp(client, Prop_Data, "m_bPlayerUnderwater", false);
-	SetEntProp(client, Prop_Data, "m_iTrain", TRAIN_NEW);
-	SetInvisible(client, false);
-	SetEntityFlags(client, GetEntityFlags(client) & ~FL_GODMODE);
-	ChangeEdictState(client, 0);
-}
-
-void SetInvisible(int client, bool is_invisible)
-{
-	if (is_invisible)
-	{
-		SetEntProp(client, Prop_Send, "m_fEffects",
-		GetEntProp(client, Prop_Send, "m_fEffects") | EF_NODRAW);
-	}
-	else
-	{
-		SetEntProp(client, Prop_Send, "m_fEffects",
-		GetEntProp(client, Prop_Send, "m_fEffects") & ~EF_NODRAW);
-	}
 }
 
 public void OnClientDisconnect_Post(int client)
@@ -1073,9 +838,6 @@ public void OnClientDisconnect_Post(int client)
 	{
 		return;
 	}
-	
-	g_canRespawn[client] = true;
-	g_clientFirstJoin[client] = false;
 }
 
 void PrintMsg(const char[] msg, int flags, any ...)
