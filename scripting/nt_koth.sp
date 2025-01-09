@@ -22,16 +22,15 @@ public Plugin myinfo = {
 	name = "NT King of the hill mode",
 	description = "Enables KoTH mode",
 	author = "bauxite",
-	version = "0.2.3",
+	version = "0.3.0",
 	url = "",
 };
 
 DynamicDetour ddWin;
 
-Handle g_hillTimer = null;
-Handle g_winTimer = null;
-Handle g_hudTimer = null;
-Handle g_stateTimer = null;
+Handle g_hillTimer;
+Handle g_winTimer;
+Handle g_stateTimer;
 Handle g_godTimer[NEO_MAXPLAYERS+1];
 
 bool g_lateLoad;
@@ -44,10 +43,11 @@ bool g_nsfStart;
 
 int g_nsfOnHill;
 int g_jinOnHill;
+int g_inacSprite;
+int g_noneSprite;
 int g_jinSprite;
 int g_nsfSprite;
-int g_noneSprite;
-int g_inacSprite;
+int g_lastSprite;
 int red;
 int green;
 int blue;
@@ -266,62 +266,107 @@ public void OnMapStart()
 	StoreToAddress(view_as<Address>(0x2245556F), 'T', NumberType_Int8);
 	StoreToAddress(view_as<Address>(0x22455570), 'H', NumberType_Int8);
 	
+	g_inacSprite = FindEntityByTargetname("env_sprite", "point_sprite_inactive");
+	g_noneSprite = FindEntityByTargetname("env_sprite", "point_sprite_none");
 	g_jinSprite = FindEntityByTargetname("env_sprite", "point_sprite_jin");
 	g_nsfSprite = FindEntityByTargetname("env_sprite", "point_sprite_nsf");
-	g_noneSprite = FindEntityByTargetname("env_sprite", "point_sprite_none");
-	g_inacSprite = FindEntityByTargetname("env_sprite", "point_sprite_inactive");
 	
-	CreateTimer(0.25, ToggleSprites, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+	ResetSprites();
+	
+	CreateTimer(0.31, HudTimer, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
 }
 
-public Action ToggleSprites(Handle timer)
+void ResetSprites()
 {
+	AcceptEntityInput(g_inacSprite, "ShowSprite", -1, -1);
+	AcceptEntityInput(g_noneSprite, "HideSprite", -1, -1);
+	AcceptEntityInput(g_jinSprite, "HideSprite", -1, -1);
+	AcceptEntityInput(g_nsfSprite, "HideSprite", -1, -1);
 	
-	//static bool //b_inac = true;
-	//static bool //b_none = true;
-	//static bool //b_jin = true;
-	//static bool //b_nsf = true;
+	g_lastSprite = g_inacSprite;
+}
+
+public Action HudTimer(Handle timer)
+{
+	// dont need complicated logic checks for setting the right sprite as only one is ever active
+	// store last active sprite and disable that one whenever a new one is set etc
+	// they revert their state on a new round so they have to be reset to desired starting state
+	//(float x, float y, float holdTime, int r, int g, int b, int a, int effect, float fxTime, float fadeIn, float fadeOut)
 	
+	for(int i = 1; i <= MaxClients; i++)
+	{
+		if(!IsClientInGame(i))
+		{
+			continue;
+		}
+		
+		if(g_jinStart)
+		{
+			if(g_lastSprite != g_jinSprite)
+			{
+				AcceptEntityInput(g_lastSprite, "HideSprite", -1, -1);
+				AcceptEntityInput(g_jinSprite, "ShowSprite", -1, -1);
+				g_lastSprite = g_jinSprite;
+			}
+			
+			red = 25;
+			green = 255;
+			blue = 0;
+			alpha = 0;
+		}
+		else if(g_nsfStart)
+		{
+			if(g_lastSprite != g_nsfSprite)
+			{
+				AcceptEntityInput(g_lastSprite, "HideSprite", -1, -1);
+				AcceptEntityInput(g_nsfSprite, "ShowSprite", -1, -1);
+				g_lastSprite = g_nsfSprite;
+			}
+			
+			red = 0;
+			green = 100;
+			blue = 255;
+			alpha = 0;
+		}
+		else if(g_hillActive)
+		{
+			if(g_lastSprite != g_noneSprite)
+			{
+				AcceptEntityInput(g_lastSprite, "HideSprite", -1, -1);
+				AcceptEntityInput(g_noneSprite, "ShowSprite", -1, -1);
+				g_lastSprite = g_noneSprite;
+			}
+			
+			red = 250;
+			green = 250;
+			blue = 250;
+			alpha = 0;
+		}
+		else
+		{
+			if(g_lastSprite != g_inacSprite)
+			{
+				AcceptEntityInput(g_lastSprite, "HideSprite", -1, -1);
+				AcceptEntityInput(g_inacSprite, "ShowSprite", -1, -1);
+				g_lastSprite = g_inacSprite;
+			}
+			
+			red = 250;
+			green = 0;
+			blue = 0;
+			alpha = 0;
+		}
+		
+		SetHudTextParams(0.36, 0.0, 1.0, 25, 225, 0, 0, 1, 0.0, 0.0, 0.0); 
+		ShowHudText(i, 5, "Jin: %.2f", g_jinTime);
+		
+		SetHudTextParams(0.48, 0.0, 1.0, red, green, blue, alpha, 1, 0.0, 0.0, 0.0); 
+		ShowHudText(i, 4, "KoTH");
 	
-	if(!g_hillActive)
-	{
-		// b_inac = true;
-		// rest false
+		SetHudTextParams(0.56, 0.0, 1.0, 0, 100, 255, 0, 1, 0.0, 0.0, 0.0);
+		ShowHudText(i, 6, "  NSF: %.2f", g_nsfTime);
+	}
 	
-		AcceptEntityInput(g_inacSprite, "ShowSprite", -1, -1);
-		AcceptEntityInput(g_noneSprite, "HideSprite", -1, -1);
-		AcceptEntityInput(g_jinSprite, "HideSprite", -1, -1);
-		AcceptEntityInput(g_nsfSprite, "HideSprite", -1, -1);
-	}
-	else if(g_jinStart)
-	{
-		// b_jin = true;
-		// rest false
-		
-		AcceptEntityInput(g_inacSprite, "HideSprite", -1, -1);
-		AcceptEntityInput(g_noneSprite, "HideSprite", -1, -1);
-		AcceptEntityInput(g_jinSprite, "ShowSprite", -1, -1);
-		AcceptEntityInput(g_nsfSprite, "HideSprite", -1, -1);
-	}
-	else if(g_nsfStart)
-	{
-		// b_nsf = true;
-		
-		AcceptEntityInput(g_inacSprite, "HideSprite", -1, -1);
-		AcceptEntityInput(g_noneSprite, "HideSprite", -1, -1);
-		AcceptEntityInput(g_nsfSprite, "ShowSprite", -1, -1);
-		AcceptEntityInput(g_jinSprite, "HideSprite", -1, -1);
-	}
-	else
-	{
-		//b_none = true;
-		
-		AcceptEntityInput(g_inacSprite, "HideSprite", -1, -1);
-		AcceptEntityInput(g_noneSprite, "ShowSprite", -1, -1);
-		AcceptEntityInput(g_jinSprite, "HideSprite", -1, -1);
-		AcceptEntityInput(g_nsfSprite, "HideSprite", -1, -1);
-	}
-		
 	return Plugin_Continue;
 }
 
@@ -344,7 +389,6 @@ public void OnConfigsExecuted()
 		return;
 	}
 	
-	FindConVar("neo_score_limit").IntValue = 4;
 	FindConVar("neo_round_timelimit").FloatValue = 6.52;
 	
 	ConVar roundStyle = FindConVar("sm_competitive_round_style");
@@ -354,6 +398,10 @@ public void OnConfigsExecuted()
 	{
 		roundStyle.IntValue = 2;
 		roundLimit.IntValue = 4;
+	}
+	else
+	{
+		FindConVar("neo_score_limit").IntValue = 4;
 	}
 }
 
@@ -399,7 +447,7 @@ void CreateDetour()
 MRESReturn CheckWinCondition(Address pThis, DHookReturn hReturn)
 {
 	#if DEBUG
-	PrintToChatAll("1");
+	PrintToChatAll("Checking for win");
 	#endif
 	
 	if(CheckingForWin())
@@ -434,16 +482,6 @@ void ResetWin()
 		
 		#if DEBUG
 		PrintToServer("deleting win timer");
-		#endif
-	}
-	
-	if(IsValidHandle(g_hudTimer))
-	{
-		CloseHandle(g_hudTimer);
-		g_hudTimer = null;
-		
-		#if DEBUG
-		PrintToServer("deleting hud timer");
 		#endif
 	}
 	
@@ -654,59 +692,6 @@ public Action WinTimer(Handle timer)
 	return Plugin_Continue;
 }
 
-public Action HudTimer(Handle timer)
-{
-	//(float x, float y, float holdTime, int r, int g, int b, int a, int effect, float fxTime, float fadeIn, float fadeOut)
-	
-	for(int i = 1; i <= MaxClients; i++)
-	{
-		if(!IsClientInGame(i))
-		{
-			continue;
-		}
-		
-		if(g_jinStart)
-		{
-			red = 25;
-			green = 255;
-			blue = 0;
-			alpha = 0;
-		}
-		else if(g_nsfStart)
-		{
-			red = 0;
-			green = 100;
-			blue = 255;
-			alpha = 0;
-		}
-		else if(g_hillActive)
-		{
-			red = 250;
-			green = 250;
-			blue = 250;
-			alpha = 0;
-		}
-		else
-		{
-			red = 250;
-			green = 0;
-			blue = 0;
-			alpha = 0;
-		}
-		
-		SetHudTextParams(0.36, 0.0, 1.0, 25, 225, 0, 0, 1, 0.0, 0.0, 0.0); 
-		ShowHudText(i, 5, "Jin: %.2f", g_jinTime);
-		
-		SetHudTextParams(0.48, 0.0, 1.0, red, green, blue, alpha, 1, 0.0, 0.0, 0.0); 
-		ShowHudText(i, 4, "KoTH");
-	
-		SetHudTextParams(0.56, 0.0, 1.0, 0, 100, 255, 0, 1, 0.0, 0.0, 0.0);
-		ShowHudText(i, 6, "  NSF: %.2f", g_nsfTime);
-	}
-	
-	return Plugin_Continue;
-}
-
 void EndRoundAndShowWinner(int team) //what about during comp pause
 {
 	int GameState = GameRules_GetProp("m_iGameState");
@@ -756,18 +741,6 @@ public void OnRoundStartPost(Event event, const char[] name, bool dontBroadcast)
 	HookSingleEntityOutput(trigger, "OnStartTouch", Trigger_OnStartTouch);
 	HookSingleEntityOutput(trigger, "OnEndTouch", Trigger_OnEndTouch);
 	
-	if(!IsValidHandle(g_hudTimer)) 
-	{
-	// have this running all the time and animate sprites inside this as well
-	// store sprite state in an array?
-	
-		g_hudTimer = CreateTimer(0.31, HudTimer, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
-		
-		#if DEBUG
-		PrintToServer("creating hud timer");
-		#endif
-	}
-	
 	if(!IsValidHandle(g_hillTimer))
 	{
 		g_hillTimer = CreateTimer(31.0, HillTimer, _, TIMER_FLAG_NO_MAPCHANGE);
@@ -785,6 +758,8 @@ public void OnRoundStartPost(Event event, const char[] name, bool dontBroadcast)
 		PrintToServer("creating state timer");
 		#endif
 	}
+	
+	ResetSprites();
 }
 
 public Action GameStateTimer(Handle timer)
@@ -795,8 +770,6 @@ public Action GameStateTimer(Handle timer)
 
 public Action HillTimer(Handle timer)
 {
-	g_hillActive = true;
-	
 	if(g_hillHasJin && !g_hillHasNSF && !g_jinStart)
 	{
 		g_startTime = GetGameTime();
@@ -814,11 +787,17 @@ public Action HillTimer(Handle timer)
 		g_nsfStart = false;
 		g_jinStart = false;
 	}
-	else
+	
+	// problem?
+	/*
+	else 
 	{
 		g_nsfStart = false;
 		g_jinStart = false;
 	}
+	*/
+	
+	g_hillActive = true;
 	
 	if(!IsValidHandle(g_winTimer))
 	{
