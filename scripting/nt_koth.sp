@@ -26,6 +26,9 @@ public Plugin myinfo = {
 	url = "",
 };
 
+static char g_kothMessage[] = "Welcome to King of the Hill mode\ncontrol the point to win the round";
+static char g_capSound[] = "gameplay/ghost_pickup.wav";
+
 DynamicDetour ddWin;
 
 Handle g_hillTimer;
@@ -33,6 +36,8 @@ Handle g_winTimer;
 Handle g_stateTimer;
 Handle g_godTimer[NEO_MAXPLAYERS+1];
 
+bool g_onHillPlayers[NEO_MAXPLAYERS+1];
+bool g_seenMesage[NEO_MAXPLAYERS+1];
 bool g_lateLoad;
 bool g_kothMap;
 bool g_hillActive;
@@ -41,6 +46,7 @@ bool g_hillHasJin;
 bool g_jinStart;
 bool g_nsfStart;
 
+int g_onHillTeams[NEO_MAXPLAYERS+1];
 int g_nsfOnHill;
 int g_jinOnHill;
 int g_inacSprite;
@@ -202,8 +208,19 @@ public void OnPlayerSpawnPost(Event event, const char[] name, bool dontBroadcast
 		return;
 	}
 	
+	if(GetClientTeam(client) <= TEAM_SPECTATOR)
+	{
+		return;
+	}
+	
+	if(!g_seenMesage[client])
+	{
+		g_seenMesage[client] = true;
+		CreateTimer(3.0, ShowKothMessage, userid, TIMER_FLAG_NO_MAPCHANGE);
+	}
+	
 	SetEntityFlags(client, GetEntityFlags(client) | FL_GODMODE);
-	PrintCenterText(client, "2s spawn protection");
+	PrintCenterText(client, "Spawn protection - 2s");
 	
 	if(IsValidHandle(g_godTimer[client]))
 	{
@@ -220,6 +237,23 @@ public void OnPlayerSpawnPost(Event event, const char[] name, bool dontBroadcast
 	PrintToServer("spawned");
 	PrintToServer("creating god timer");
 	#endif
+}
+
+public Action ShowKothMessage(Handle timer, int userid)
+{
+	//(float x, float y, float holdTime, int r, int g, int b, int a, int effect, float fxTime, float fadeIn, float fadeOut)
+
+	int client = GetClientOfUserId(userid);
+	
+	if(client <= 0 || client > MaxClients)
+	{
+		return Plugin_Stop;
+	}
+	
+	SetHudTextParams(-1.0, -1.0, 5.0, 250, 0, 0, 0, 2, 0.1, 0.1, 0.1); 
+	ShowHudText(client, 3, g_kothMessage);
+		
+	return Plugin_Stop;
 }
 
 public Action RemoveGod(Handle timer, int userid)
@@ -380,6 +414,11 @@ public void OnMapEnd()
 	StoreToAddress(view_as<Address>(0x2245556E), 'C', NumberType_Int8);
 	StoreToAddress(view_as<Address>(0x2245556F), 'T', NumberType_Int8);
 	StoreToAddress(view_as<Address>(0x22455570), 'G', NumberType_Int8);
+	
+	for(int i = 1; i <= MaxClients; i++)
+	{
+		g_seenMesage[i] = false;
+	}
 }
 
 public void OnConfigsExecuted()
@@ -518,9 +557,12 @@ void ResetWin()
 	
 	g_jinStart = false;
 	g_nsfStart = false;
-	
+
 	for(int client = 1; client <= MaxClients; client++)
 	{
+		g_onHillPlayers[client] = false;
+		g_onHillTeams[client] = 0;
+	
 		if(!IsClientInGame(client) || IsFakeClient(client))
 		{
 			continue;
@@ -536,19 +578,25 @@ void Trigger_OnStartTouch(const char[] output, int caller, int activator, float 
 {
 	int team = GetClientTeam(activator)
 	
+	if(team <= 1 || team > 3) // probably wont happen but we wont count this player?
+	{
+		PrintMsg("[KoTH] Error: Uknown/Invalid team on hill, client %d", PRNT_THREE, activator);
+		return;
+	}
+	
 	if(team == TEAM_JINRAI)
 	{
 		g_jinOnHill += 1;
+		g_onHillPlayers[activator] = true;
+		g_onHillTeams[activator] = TEAM_JINRAI;
 		g_hillHasJin = true;
 	}
 	else if(team == TEAM_NSF)
 	{
 		g_nsfOnHill += 1;
+		g_onHillPlayers[activator] = true;
+		g_onHillTeams[activator] = TEAM_NSF;
 		g_hillHasNSF = true;
-	}
-	else
-	{
-		PrintToChatAll("[KoTH] Error: Uknown/Invalid team on hill");
 	}
 	
 	if(!g_hillActive)
@@ -561,12 +609,14 @@ void Trigger_OnStartTouch(const char[] output, int caller, int activator, float 
 		g_startTime = GetGameTime();
 		g_jinStart = true;
 		g_nsfStart = false;
+		EmitSoundToAll(g_capSound);
 	}
 	else if(g_hillHasNSF && !g_hillHasJin && !g_nsfStart)
 	{
 		g_startTime = GetGameTime();
 		g_nsfStart = true;
 		g_jinStart = false;
+		EmitSoundToAll(g_capSound);
 	}
 	else if(g_hillHasJin && g_hillHasNSF)
 	{
@@ -582,11 +632,33 @@ void Trigger_OnStartTouch(const char[] output, int caller, int activator, float 
 
 void Trigger_OnEndTouch(const char[] output, int caller, int activator, float delay)
 {
+	// problem if players dc in trigger
+	// we need to store players in trigger and then remove them if they dc
+	// or continuously check who's in trigger
+	
 	int team = GetClientTeam(activator)
+	
+	if(team <= 1 || team > 3)
+	{
+		PrintMsg("[KoTH] Error: Uknown/Invalid team left hill, client %d", PRNT_THREE, activator);
+	}
+		
+	if(g_onHillPlayers[activator])
+	{
+		team = g_onHillTeams[activator]
+	}
+	else
+	{
+		// they weren't on the hill, but somehow triggered endtouch, just ignore them?
+		PrintMsg("[KoTH] Error: Player somehow left hill but was never on it, client %d", PRNT_THREE, activator);
+		return;
+	}
 	
 	if(team == TEAM_JINRAI)
 	{
 		g_jinOnHill -= 1;
+		g_onHillPlayers[activator] = false;
+		g_onHillTeams[activator] = 0;
 		
 		if(g_jinOnHill == 0)
 		{
@@ -596,17 +668,15 @@ void Trigger_OnEndTouch(const char[] output, int caller, int activator, float de
 	else if(team == TEAM_NSF)
 	{
 		g_nsfOnHill -= 1;
+		g_onHillPlayers[activator] = false;
+		g_onHillTeams[activator] = 0;
 		
 		if(g_nsfOnHill == 0)
 		{
 			g_hillHasNSF = false;
 		}
 	}
-	else
-	{
-		PrintToChatAll("[KoTH] Error: Uknown/Invalid team left hill");
-	}
-	
+
 	if(!g_hillActive)
 	{
 		return;
@@ -617,12 +687,14 @@ void Trigger_OnEndTouch(const char[] output, int caller, int activator, float de
 		g_startTime = GetGameTime();
 		g_jinStart = true;
 		g_nsfStart = false;
+		EmitSoundToAll(g_capSound);
 	}
 	else if(g_hillHasNSF && !g_hillHasJin && !g_nsfStart)
 	{
 		g_startTime = GetGameTime();
 		g_nsfStart = true;
 		g_jinStart = false;
+		EmitSoundToAll(g_capSound);
 	}
 	else if(!g_hillHasJin && !g_hillHasNSF)
 	{
@@ -817,6 +889,8 @@ public void OnClientDisconnect_Post(int client)
 	{
 		return;
 	}
+	
+	g_seenMesage[client] = false;
 }
 
 void PrintMsg(const char[] msg, int flags, any ...)
