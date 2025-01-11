@@ -22,9 +22,11 @@ public Plugin myinfo = {
 	name = "NT King of the hill mode",
 	description = "Enables KoTH mode",
 	author = "bauxite",
-	version = "0.3.0",
+	version = "0.3.1",
 	url = "",
 };
+
+native bool Competitive_IsLive();
 
 static char g_kothMessage[] = "Welcome to King of the Hill mode\ncontrol the point to win the round";
 static char g_capSound[] = "gameplay/ghost_pickup.wav";
@@ -46,6 +48,7 @@ bool g_hillHasJin;
 bool g_jinStart;
 bool g_nsfStart;
 bool g_setActive;
+bool g_comp;
 
 int g_onHillTeams[NEO_MAXPLAYERS+1];
 int g_nsfOnHill;
@@ -95,6 +98,7 @@ int FindEntityByTargetname(const char[] classname, const char[] targetname)
 public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max)
 {
 	g_lateLoad = late;
+	MarkNativeAsOptional("Competitive_IsLive");
 	return APLRes_Success;
 }
 
@@ -201,6 +205,10 @@ public void OnPlayerSpawnPost(Event event, const char[] name, bool dontBroadcast
 		return;
 	}
 	
+	#if DEBUG
+	PrintToServer("spawned");
+	#endif
+	
 	int userid = GetEventInt(event, "userid");
 	int client = GetClientOfUserId(userid);
 	
@@ -220,8 +228,13 @@ public void OnPlayerSpawnPost(Event event, const char[] name, bool dontBroadcast
 		CreateTimer(3.0, ShowKothMessage, userid, TIMER_FLAG_NO_MAPCHANGE);
 	}
 	
+	if(g_comp && !Competitive_IsLive())
+	{
+		return;
+	}
+	
 	SetEntityFlags(client, GetEntityFlags(client) | FL_GODMODE);
-	PrintCenterText(client, "Spawn protection - 2s");
+	PrintCenterText(client, "Spawn protection - 3s");
 	
 	if(IsValidHandle(g_godTimer[client]))
 	{
@@ -232,10 +245,9 @@ public void OnPlayerSpawnPost(Event event, const char[] name, bool dontBroadcast
 		#endif
 	}
 	
-	g_godTimer[client] = CreateTimer(2.0, RemoveGod, userid, TIMER_FLAG_NO_MAPCHANGE);
-		
+	g_godTimer[client] = CreateTimer(3.0, RemoveGod, userid, TIMER_FLAG_NO_MAPCHANGE);	
+	
 	#if DEBUG
-	PrintToServer("spawned");
 	PrintToServer("creating god timer");
 	#endif
 }
@@ -478,10 +490,12 @@ public void OnConfigsExecuted()
 	{
 		roundStyle.IntValue = 2;
 		roundLimit.IntValue = 4;
+		g_comp = true;
 	}
 	else
 	{
 		FindConVar("neo_score_limit").IntValue = 4;
+		g_comp = false;
 	}
 }
 
