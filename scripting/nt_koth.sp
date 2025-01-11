@@ -45,15 +45,24 @@ bool g_hillHasNSF;
 bool g_hillHasJin;
 bool g_jinStart;
 bool g_nsfStart;
+bool g_setActive;
 
 int g_onHillTeams[NEO_MAXPLAYERS+1];
 int g_nsfOnHill;
 int g_jinOnHill;
+
 int g_inacSprite;
 int g_noneSprite;
 int g_jinSprite;
 int g_nsfSprite;
 int g_lastSprite;
+
+int g_inacBrush;
+int g_noneBrush;
+int g_jinBrush;
+int g_nsfBrush;
+int g_lastBrush;
+
 int red;
 int green;
 int blue;
@@ -64,12 +73,6 @@ float g_jinTime;
 float g_nsfTime;
 float curTime;
 float roundTimeLeft;
-
-
-stock int GetOpposingTeam(int team)
-{
-    return team == TEAM_JINRAI ? TEAM_NSF : TEAM_JINRAI;
-}
 
 int FindEntityByTargetname(const char[] classname, const char[] targetname)
 {
@@ -87,13 +90,6 @@ int FindEntityByTargetname(const char[] classname, const char[] targetname)
 	}
 
 	return -1;
-}
-
-stock bool IsPlayerDead(int client) // Agiel: None of the normal ways seemed to handle the case when players are still selecting weapon.
-{
-    Address player = GetEntityAddress(client);
-    int isAlive = LoadFromAddress(player + view_as<Address>(0xDC4), NumberType_Int32);
-    return isAlive == 0;
 }
 
 public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max)
@@ -200,6 +196,11 @@ public Action OnWeaponDrop(int client, int weapon)
 
 public void OnPlayerSpawnPost(Event event, const char[] name, bool dontBroadcast)
 {
+	if(!g_kothMap)
+	{
+		return;
+	}
+	
 	int userid = GetEventInt(event, "userid");
 	int client = GetClientOfUserId(userid);
 	
@@ -256,7 +257,7 @@ public Action ShowKothMessage(Handle timer, int userid)
 	return Plugin_Stop;
 }
 
-public Action RemoveGod(Handle timer, int userid)
+public Action RemoveGod(Handle timer, int userid) //dont remove god for comp unlive
 {
 	int client = GetClientOfUserId(userid);
 	
@@ -300,10 +301,15 @@ public void OnMapStart()
 	StoreToAddress(view_as<Address>(0x2245556F), 'T', NumberType_Int8);
 	StoreToAddress(view_as<Address>(0x22455570), 'H', NumberType_Int8);
 	
-	g_inacSprite = FindEntityByTargetname("env_sprite", "point_sprite_inactive");
-	g_noneSprite = FindEntityByTargetname("env_sprite", "point_sprite_none");
-	g_jinSprite = FindEntityByTargetname("env_sprite", "point_sprite_jin");
-	g_nsfSprite = FindEntityByTargetname("env_sprite", "point_sprite_nsf");
+	g_inacSprite = FindEntityByTargetname("env_sprite", "koth_sprite_inactive");
+	g_noneSprite = FindEntityByTargetname("env_sprite", "koth_sprite_none");
+	g_jinSprite = FindEntityByTargetname("env_sprite", "koth_sprite_jin");
+	g_nsfSprite = FindEntityByTargetname("env_sprite", "koth_sprite_nsf");
+	
+	g_inacBrush = FindEntityByTargetname("func_brush", "koth_brush_inactive");
+	g_noneBrush = FindEntityByTargetname("func_brush", "koth_brush_none");
+	g_jinBrush = FindEntityByTargetname("func_brush", "koth_brush_jin");
+	g_nsfBrush = FindEntityByTargetname("func_brush", "koth_brush_nsf");
 	
 	ResetSprites();
 	
@@ -318,6 +324,13 @@ void ResetSprites()
 	AcceptEntityInput(g_nsfSprite, "HideSprite", -1, -1);
 	
 	g_lastSprite = g_inacSprite;
+	
+	AcceptEntityInput(g_inacBrush, "Enable", -1, -1);
+	AcceptEntityInput(g_noneBrush, "Disable", -1, -1);
+	AcceptEntityInput(g_jinBrush, "Disable", -1, -1);
+	AcceptEntityInput(g_nsfBrush, "Disable", -1, -1);
+	
+	g_lastBrush = g_inacBrush;
 }
 
 public Action HudTimer(Handle timer)
@@ -343,6 +356,13 @@ public Action HudTimer(Handle timer)
 				g_lastSprite = g_jinSprite;
 			}
 			
+			if(g_lastBrush != g_jinBrush)
+			{
+				AcceptEntityInput(g_lastBrush, "Disable", -1, -1);
+				AcceptEntityInput(g_jinBrush, "Enable", -1, -1);
+				g_lastBrush = g_jinBrush;
+			}
+			
 			red = 25;
 			green = 255;
 			blue = 0;
@@ -355,6 +375,13 @@ public Action HudTimer(Handle timer)
 				AcceptEntityInput(g_lastSprite, "HideSprite", -1, -1);
 				AcceptEntityInput(g_nsfSprite, "ShowSprite", -1, -1);
 				g_lastSprite = g_nsfSprite;
+			}
+			
+			if(g_lastBrush != g_nsfBrush)
+			{
+				AcceptEntityInput(g_lastBrush, "Disable", -1, -1);
+				AcceptEntityInput(g_nsfBrush, "Enable", -1, -1);
+				g_lastBrush = g_nsfBrush;
 			}
 			
 			red = 0;
@@ -371,6 +398,13 @@ public Action HudTimer(Handle timer)
 				g_lastSprite = g_noneSprite;
 			}
 			
+			if(g_lastBrush != g_noneBrush)
+			{
+				AcceptEntityInput(g_lastBrush, "Disable", -1, -1);
+				AcceptEntityInput(g_noneBrush, "Enable", -1, -1);
+				g_lastBrush = g_noneBrush;
+			}
+			
 			red = 250;
 			green = 250;
 			blue = 250;
@@ -383,6 +417,13 @@ public Action HudTimer(Handle timer)
 				AcceptEntityInput(g_lastSprite, "HideSprite", -1, -1);
 				AcceptEntityInput(g_inacSprite, "ShowSprite", -1, -1);
 				g_lastSprite = g_inacSprite;
+			}
+			
+			if(g_lastBrush != g_inacBrush)
+			{
+				AcceptEntityInput(g_lastBrush, "Disable", -1, -1);
+				AcceptEntityInput(g_inacBrush, "Enable", -1, -1);
+				g_lastBrush = g_inacBrush;
 			}
 			
 			red = 250;
@@ -557,6 +598,8 @@ void ResetWin()
 	
 	g_jinStart = false;
 	g_nsfStart = false;
+	
+	g_setActive = false;
 
 	for(int client = 1; client <= MaxClients; client++)
 	{
@@ -650,7 +693,10 @@ void Trigger_OnEndTouch(const char[] output, int caller, int activator, float de
 	else
 	{
 		// they weren't on the hill, but somehow triggered endtouch, just ignore them?
-		PrintMsg("[KoTH] Error: Player somehow left hill but was never on it, client %d", PRNT_THREE, activator);
+		// can happen at round end
+		#if DEBUG
+		PrintMsg("[KoTH] Error: Player somehow left hill but was never on it, client %d", PRNT_CNSL | PRNT_SRVR, activator);
+		#endif
 		return;
 	}
 	
@@ -718,13 +764,17 @@ public Action WinTimer(Handle timer)
 		return Plugin_Continue;
 	}
 	
-	roundTimeLeft = GameRules_GetPropFloat("m_fRoundTimeLeft");
-	
-	if(roundTimeLeft <= 15.0)
+	if(!g_setActive)
 	{
-		GameRules_SetProp("m_iGameState", GAMESTATE_ROUND_ACTIVE);
+		roundTimeLeft = GameRules_GetPropFloat("m_fRoundTimeLeft");
+	
+		if(roundTimeLeft <= 15.0)
+		{
+			GameRules_SetProp("m_iGameState", GAMESTATE_ROUND_ACTIVE);
+			g_setActive = true;
+		}
 	}
-		
+	
 	curTime = GetGameTime();
 	
 	if(g_jinStart)
@@ -847,12 +897,14 @@ public Action HillTimer(Handle timer)
 		g_startTime = GetGameTime();
 		g_jinStart = true;
 		g_nsfStart = false;
+		EmitSoundToAll(g_capSound);
 	}
 	else if(g_hillHasNSF && !g_hillHasJin && !g_nsfStart)
 	{
 		g_startTime = GetGameTime();
 		g_nsfStart = true;
 		g_jinStart = false;
+		EmitSoundToAll(g_capSound);
 	}
 	else if(g_hillHasJin && g_hillHasNSF)
 	{
