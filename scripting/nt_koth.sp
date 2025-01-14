@@ -326,6 +326,8 @@ public void OnMapStart()
 	ResetSprites();
 	
 	CreateTimer(0.31, HudTimer, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+	
+	PrecacheSound(g_capSound); //probably dont need to do this cos game uses this anyway
 }
 
 void ResetSprites()
