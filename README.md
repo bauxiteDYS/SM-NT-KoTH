@@ -1,2 +1,2 @@
 # SM-NT-KoTH
-Sourcemod plugin for Neotokyo that enables KoTH mode
+Sourcemod plugin for Neotokyo that enables KoTH mode, experimental.
